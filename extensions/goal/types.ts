@@ -47,6 +47,7 @@ export interface GoalLoopSafetyRuntimeConfig {
 
 export interface GoalRuntimeConfig {
   source?: string;
+  globalSource?: string;
   maxAttempts: number;
   observer: GoalRoleRuntimeConfig;
   summarizer: GoalRoleRuntimeConfig;
@@ -74,6 +75,19 @@ export interface GoalRun {
   lastVerdict?: VerifierVerdict;
   lastMainLeafId?: string | null;
   verifierLogDir?: string;
+}
+
+export type GoalProgressPhase = "preparing" | "summarizing" | "collectingEvidence" | "verifying" | "parsing";
+
+export interface GoalProgressSnapshot {
+  phase: GoalProgressPhase;
+  action: string;
+  lines: string[];
+  turnCount?: number;
+  toolCount?: number;
+  thinkingChars?: number;
+  textPreview?: string;
+  updatedAt: number;
 }
 
 export interface GoalStateEntry {
@@ -174,9 +188,26 @@ export interface VerifierInput {
   observerConfig: GoalRoleRuntimeConfig;
 }
 
-export interface VerifierAdapter {
-  verify(input: VerifierInput): Promise<VerifierVerdict>;
+export type VerifierProgressEvent =
+  | { type: "turn_start"; turnIndex: number }
+  | { type: "text_delta"; delta: string }
+  | { type: "thinking_delta"; delta: string }
+  | { type: "tool_start"; toolCallId: string; toolName: string; args: unknown }
+  | { type: "tool_update"; toolCallId: string; toolName: string; args: unknown; partialResult: unknown }
+  | { type: "tool_end"; toolCallId: string; toolName: string; args: unknown; result: unknown; isError: boolean }
+  | { type: "agent_end" };
+
+export interface VerifierProgressOptions {
+  onProgress?: (event: VerifierProgressEvent) => void;
 }
+
+export interface VerifierAdapter {
+  verify(input: VerifierInput, options?: VerifierProgressOptions): Promise<VerifierVerdict>;
+}
+
+export type EvidenceProgressEvent =
+  | { type: "validation_start"; command: string }
+  | { type: "validation_end"; command: string; exitCode: number };
 
 export interface SessionSummarizerInput {
   goal: GoalRun;

@@ -31,4 +31,24 @@ describe("TUI formatting", () => {
     expect(formatWidget(run)).toContain("No-progress cycles: 2");
     expect(formatWidget(run)).toContain("Stop reason: Loop safety stopped the goal.");
   });
+
+  it("includes transient verifier progress when provided", () => {
+    const run = createGoalRun({ objective: "ship it", maxAttempts: 2 });
+
+    const widget = formatWidget(run, {
+      phase: "verifying",
+      action: "Verifier tool running: bash npm test",
+      lines: ["turn 1: started", "tool: bash npm test -> running"],
+      turnCount: 1,
+      toolCount: 0,
+      thinkingChars: 42,
+      textPreview: "Checking validation evidence",
+      updatedAt: Date.now(),
+    });
+
+    expect(widget).toContain("Progress: Verifier tool running: bash npm test");
+    expect(widget).toContain("Verifier activity: turns 1 | tools 0 | hidden thinking chars 42");
+    expect(widget).toContain("Verifier text: Checking validation evidence");
+    expect(widget).toContain("> tool: bash npm test -> running");
+  });
 });

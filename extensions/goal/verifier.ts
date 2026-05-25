@@ -5,7 +5,7 @@ import { promisify } from "node:util";
 import { createExtensionRuntime, createAgentSession, type ResourceLoader, SessionManager, SettingsManager } from "@earendil-works/pi-coding-agent";
 import { buildSessionSummaryPrompt, buildVerifierPrompt } from "./prompts.ts";
 import { defaultGoalConfig } from "./config.ts";
-import type { CommandEvidence, EvidenceBundle, FileExcerptEvidence, FileListEvidence, GoalEvidenceRuntimeConfig, SessionSummarizerAdapter, SessionSummarizerInput, SessionSummaryEvidence, VerifierAdapter, VerifierInput, VerifierVerdict } from "./types.ts";
+import type { CommandEvidence, EvidenceBundle, EvidenceProgressEvent, FileExcerptEvidence, FileListEvidence, GoalEvidenceRuntimeConfig, SessionSummarizerAdapter, SessionSummarizerInput, SessionSummaryEvidence, VerifierAdapter, VerifierInput, VerifierProgressEvent, VerifierProgressOptions, VerifierVerdict } from "./types.ts";
 import { modelRefFromModel, truncate } from "./state.ts";
 import { GOAL_STATE_CUSTOM_TYPE } from "./types.ts";
 
@@ -22,7 +22,7 @@ const IGNORED_DIRS = new Set([".git", ".hg", ".svn", ".pi", ".build", ".swiftpm"
 const SOURCE_EXTENSIONS = new Set([".c", ".cc", ".cpp", ".cs", ".css", ".go", ".h", ".hpp", ".html", ".java", ".js", ".jsx", ".kt", ".m", ".mm", ".php", ".py", ".rb", ".rs", ".scala", ".sh", ".swift", ".ts", ".tsx", ".vue"]);
 
 export class SdkVerifierAdapter implements VerifierAdapter {
-  async verify(input: VerifierInput): Promise<VerifierVerdict> {
+  async verify(input: VerifierInput, options: VerifierProgressOptions = {}): Promise<VerifierVerdict> {
     const prompt = buildVerifierPrompt({
       run: input.goal,
       evidence: input.evidence,
@@ -48,11 +48,17 @@ export class SdkVerifierAdapter implements VerifierAdapter {
       settingsManager,
     });
 
+    const unsubscribe = session.subscribe((event) => {
+      const progress = verifierProgressFromSessionEvent(event);
+      if (progress) options.onProgress?.(progress);
+    });
+
     try {
       await session.prompt(prompt, { expandPromptTemplates: false, source: "extension" });
       const output = extractLatestAssistantText(session.messages);
       return parseVerifierOutput(output);
     } finally {
+      unsubscribe();
       session.dispose();
     }
   }
@@ -105,10 +111,16 @@ export class SdkSessionSummarizerAdapter implements SessionSummarizerAdapter {
   }
 }
 
-export async function collectEvidence(cwd: string, sessionFile?: string, sessionSummary?: SessionSummaryEvidence, config: GoalEvidenceRuntimeConfig = defaultGoalConfig().evidence): Promise<EvidenceBundle> {
+export async function collectEvidence(
+  cwd: string,
+  sessionFile?: string,
+  sessionSummary?: SessionSummaryEvidence,
+  config: GoalEvidenceRuntimeConfig = defaultGoalConfig().evidence,
+  onProgress?: (event: EvidenceProgressEvent) => void,
+): Promise<EvidenceBundle> {
   const detectedCommands = await detectValidationCommands(cwd);
   const validationCommands = [...(config.validationCommands ?? detectedCommands), ...config.extraValidationCommands];
-  const validationResults = await runValidationCommands(cwd, validationCommands, config);
+  const validationResults = await runValidationCommands(cwd, validationCommands, config, onProgress);
 
   const [gitStatus, gitDiffStat, gitDiffNameOnly, rootListing, readmeExcerpt, allFiles] = await Promise.all([
     runCommand(cwd, "git", ["status", "--short"]),
@@ -279,13 +291,64 @@ async function runShellCommand(cwd: string, command: string, timeout: number): P
   }
 }
 
-async function runValidationCommands(cwd: string, commands: string[], config: GoalEvidenceRuntimeConfig): Promise<CommandEvidence[]> {
+async function runValidationCommands(cwd: string, commands: string[], config: GoalEvidenceRuntimeConfig, onProgress?: (event: EvidenceProgressEvent) => void): Promise<CommandEvidence[]> {
   const selected = commands.slice(0, config.validationCommandLimit);
   const results: CommandEvidence[] = [];
   for (const command of selected) {
-    results.push(await runShellCommand(cwd, command, config.validationTimeoutMs));
+    onProgress?.({ type: "validation_start", command });
+    const result = await runShellCommand(cwd, command, config.validationTimeoutMs);
+    results.push(result);
+    onProgress?.({ type: "validation_end", command, exitCode: result.exitCode });
   }
   return results;
+}
+
+function verifierProgressFromSessionEvent(event: unknown): VerifierProgressEvent | undefined {
+  const typed = event as { type?: unknown; [key: string]: unknown };
+  if (typed.type === "turn_start" && typeof typed.turnIndex === "number") {
+    return { type: "turn_start", turnIndex: typed.turnIndex };
+  }
+  if (typed.type === "message_update") {
+    const assistantEvent = typed.assistantMessageEvent as { type?: unknown; delta?: unknown } | undefined;
+    if (assistantEvent?.type === "text_delta" && typeof assistantEvent.delta === "string") {
+      return { type: "text_delta", delta: assistantEvent.delta };
+    }
+    if (assistantEvent?.type === "thinking_delta" && typeof assistantEvent.delta === "string") {
+      return { type: "thinking_delta", delta: assistantEvent.delta };
+    }
+    return undefined;
+  }
+  if (typed.type === "tool_execution_start" && typeof typed.toolCallId === "string" && typeof typed.toolName === "string") {
+    return {
+      type: "tool_start",
+      toolCallId: typed.toolCallId,
+      toolName: typed.toolName,
+      args: typed.args,
+    };
+  }
+  if (typed.type === "tool_execution_update" && typeof typed.toolCallId === "string" && typeof typed.toolName === "string") {
+    return {
+      type: "tool_update",
+      toolCallId: typed.toolCallId,
+      toolName: typed.toolName,
+      args: typed.args,
+      partialResult: typed.partialResult,
+    };
+  }
+  if (typed.type === "tool_execution_end" && typeof typed.toolCallId === "string" && typeof typed.toolName === "string") {
+    return {
+      type: "tool_end",
+      toolCallId: typed.toolCallId,
+      toolName: typed.toolName,
+      args: typed.args,
+      result: typed.result,
+      isError: typed.isError === true,
+    };
+  }
+  if (typed.type === "agent_end") {
+    return { type: "agent_end" };
+  }
+  return undefined;
 }
 
 async function collectRootListing(cwd: string): Promise<CommandEvidence> {

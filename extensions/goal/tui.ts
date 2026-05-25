@@ -1,11 +1,11 @@
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
-import type { GoalRun } from "./types.ts";
+import type { GoalProgressSnapshot, GoalRun } from "./types.ts";
 import { formatModelRef, isTerminal, truncate } from "./state.ts";
 
 const STATUS_KEY = "goal";
 const WIDGET_KEY = "goal";
 
-export function updateGoalUI(ctx: ExtensionContext, run: GoalRun | undefined): void {
+export function updateGoalUI(ctx: ExtensionContext, run: GoalRun | undefined, progress?: GoalProgressSnapshot): void {
   if (!ctx.hasUI) return;
   if (!run) {
     ctx.ui.setStatus(STATUS_KEY, undefined);
@@ -14,7 +14,7 @@ export function updateGoalUI(ctx: ExtensionContext, run: GoalRun | undefined): v
   }
 
   ctx.ui.setStatus(STATUS_KEY, formatStatus(run));
-  ctx.ui.setWidget(WIDGET_KEY, formatWidget(run), { placement: "aboveEditor" });
+  ctx.ui.setWidget(WIDGET_KEY, formatWidget(run, progress), { placement: "aboveEditor" });
 }
 
 export function clearGoalWidget(ctx: ExtensionContext): void {
@@ -28,7 +28,7 @@ export function formatStatus(run: GoalRun): string {
   return `${prefix} ${run.attempt}/${run.maxAttempts}`;
 }
 
-export function formatWidget(run: GoalRun): string[] {
+export function formatWidget(run: GoalRun, progress?: GoalProgressSnapshot): string[] {
   const verdict = run.lastVerdict;
   const lines = [
     `Goal: ${run.objective}`,
@@ -46,6 +46,24 @@ export function formatWidget(run: GoalRun): string[] {
   }
   if (run.stopReason?.trim()) {
     lines.push(`Stop reason: ${truncate(run.stopReason.trim(), 240).replace(/\s+/g, " ")}`);
+  }
+
+  if (progress) {
+    lines.push(`Progress: ${progress.action}`);
+    if (progress.turnCount !== undefined || progress.toolCount !== undefined || progress.thinkingChars !== undefined) {
+      const metrics = [
+        progress.turnCount !== undefined ? `turns ${progress.turnCount}` : "",
+        progress.toolCount !== undefined ? `tools ${progress.toolCount}` : "",
+        progress.thinkingChars !== undefined ? `hidden thinking chars ${progress.thinkingChars}` : "",
+      ].filter(Boolean);
+      if (metrics.length > 0) lines.push(`Verifier activity: ${metrics.join(" | ")}`);
+    }
+    if (progress.textPreview?.trim()) {
+      lines.push(`Verifier text: ${truncate(progress.textPreview.trim(), 240).replace(/\s+/g, " ")}`);
+    }
+    for (const progressLine of progress.lines.slice(-5)) {
+      lines.push(`> ${progressLine}`);
+    }
   }
 
   if (verdict) {

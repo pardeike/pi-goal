@@ -3,15 +3,22 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import { createAttemptGuardMetrics, recordAttemptGuardUpdate, type AttemptGuardTrip } from "./attempt-guard.ts";
 import { defaultGoalConfig, loadGoalConfig } from "./config.ts";
 import { applyLoopSafety } from "./loop-safety.ts";
+import { appendProgressLine, createGoalProgressSnapshot, createVerifierFlowMessage, createVerifierProgressTracker, createVerifierStartedMessage, createVerifierVerdictMessage, registerGoalVerifierMessageRenderer, type GoalVerifierFlowMessage } from "./progress.ts";
 import { buildInitialGoalPrompt, buildRetryPrompt } from "./prompts.ts";
-import { createGoalRun, extractLatestAssistantText, formatModelRef, goalStateEntry, isActive, latestGoalRunFromEntries, modelRefFromModel, nextAttempt, parseGoalCommand, withStatus, withVerdict } from "./state.ts";
+import { createGoalRun, extractLatestAssistantText, goalStateEntry, isActive, latestAssistantRuntimeError, latestGoalRunFromEntries, modelRefFromModel, nextAttempt, parseGoalCommand, withStatus, withVerdict } from "./state.ts";
 import { clearGoalWidget, updateGoalUI } from "./tui.ts";
-import type { GoalRoleRuntimeConfig, GoalRun, GoalRuntimeConfig, GoalThinkingLevel, SessionSummarizerAdapter, SessionSummaryEvidence, VerifierAdapter, VerifierInput, VerifierVerdict } from "./types.ts";
+import type { EvidenceProgressEvent, GoalProgressPhase, GoalProgressSnapshot, GoalRoleRuntimeConfig, GoalRun, GoalRuntimeConfig, GoalThinkingLevel, SessionSummarizerAdapter, SessionSummaryEvidence, VerifierAdapter, VerifierInput, VerifierProgressEvent, VerifierVerdict } from "./types.ts";
 import { GOAL_STATE_CUSTOM_TYPE } from "./types.ts";
 import { collectEvidence, SdkSessionSummarizerAdapter, SdkVerifierAdapter, writeVerifierLog } from "./verifier.ts";
 
+const PROGRESS_UI_THROTTLE_MS = 250;
+const MAX_TRANSCRIPT_PROGRESS_MESSAGES = 16;
+
 export default function goalExtension(pi: ExtensionAPI): void {
+  registerGoalVerifierMessageRenderer(pi);
+
   let activeRun: GoalRun | undefined;
+  let activeProgress: GoalProgressSnapshot | undefined;
   let activeConfig: GoalRuntimeConfig = defaultGoalConfig();
   let verifierRunning = false;
   let activeAgentTurnId = 0;
@@ -27,7 +34,19 @@ export default function goalExtension(pi: ExtensionAPI): void {
   function setRun(run: GoalRun | undefined, ctx?: ExtensionContext): void {
     activeRun = run;
     if (run) persist(run);
-    if (ctx) updateGoalUI(ctx, activeRun);
+    if (ctx) updateGoalUI(ctx, activeRun, activeProgress);
+  }
+
+  function setProgress(ctx: ExtensionContext, progress: GoalProgressSnapshot | undefined, immediate = true): void {
+    activeProgress = progress;
+    if (!ctx.hasUI) return;
+    if (progress) ctx.ui.setWorkingMessage(progress.action);
+    else ctx.ui.setWorkingMessage();
+    if (immediate) updateGoalUI(ctx, activeRun, activeProgress);
+  }
+
+  function sendVerifierFlowMessage(message: GoalVerifierFlowMessage): void {
+    pi.sendMessage(message);
   }
 
   function sendUserMessage(text: string, ctx: ExtensionContext): void {
@@ -36,12 +55,6 @@ export default function goalExtension(pi: ExtensionAPI): void {
     } else {
       pi.sendUserMessage(text, { deliverAs: "followUp" });
     }
-  }
-
-  function sendUserMessageAfterCurrentRun(text: string): void {
-    setTimeout(() => {
-      pi.sendUserMessage(text);
-    }, 0);
   }
 
   async function summarizeSessionSafely(run: GoalRun, model: VerifierInput["model"], thinkingLevel: GoalThinkingLevel | undefined, ctx: ExtensionContext, config: GoalRuntimeConfig): Promise<SessionSummaryEvidence> {
@@ -96,7 +109,7 @@ export default function goalExtension(pi: ExtensionAPI): void {
           return;
         }
         activeRun = run;
-        updateGoalUI(ctx, run);
+        updateGoalUI(ctx, run, activeProgress);
         ctx.ui.notify(`${run.status} ${run.attempt}/${run.maxAttempts}: ${run.objective}`, "info");
         return;
       }
@@ -108,6 +121,7 @@ export default function goalExtension(pi: ExtensionAPI): void {
         }
         const cancelled = withStatus(activeRun, "cancelled");
         setRun(cancelled, ctx);
+        setProgress(ctx, undefined);
         clearGoalWidget(ctx);
         ctx.ui.notify("Goal cancelled.", "info");
         return;
@@ -138,8 +152,9 @@ export default function goalExtension(pi: ExtensionAPI): void {
   });
 
   pi.on("session_start", async (_event, ctx) => {
+    activeProgress = undefined;
     activeRun = latestGoalRunFromEntries(ctx.sessionManager.getEntries());
-    updateGoalUI(ctx, activeRun);
+    updateGoalUI(ctx, activeRun, activeProgress);
   });
 
   pi.on("model_select", async (event, ctx) => {
@@ -166,7 +181,7 @@ export default function goalExtension(pi: ExtensionAPI): void {
     activeAgentTurnId += 1;
     attemptMetrics = createAttemptGuardMetrics();
     if (!isActive(activeRun)) return;
-    updateGoalUI(ctx, activeRun);
+    updateGoalUI(ctx, activeRun, activeProgress);
   });
 
   pi.on("message_update", async (event, ctx) => {
@@ -182,7 +197,7 @@ export default function goalExtension(pi: ExtensionAPI): void {
     if (!activeRun || activeRun.status !== "running" || verifierRunning) return;
     if (guardAbortedTurnId === activeAgentTurnId) {
       guardAbortedTurnId = undefined;
-      updateGoalUI(ctx, activeRun);
+      updateGoalUI(ctx, activeRun, activeProgress);
       return;
     }
 
@@ -207,17 +222,112 @@ export default function goalExtension(pi: ExtensionAPI): void {
       const verifierThinkingLevel = thinkingLevelFor(config.observer, pi);
       const summaryModel = resolveConfiguredModel(ctx, config.summarizer.model) ?? model;
       const summaryThinkingLevel = thinkingLevelFor(config.summarizer, pi);
-      if (ctx.hasUI) ctx.ui.setWorkingMessage("Summarizing visible goal session...");
+      const verifierModelRef = modelRefFromModel(model, verifierThinkingLevel);
+      const summaryModelRef = modelRefFromModel(summaryModel, summaryThinkingLevel);
+      const mainRuntimeError = latestAssistantRuntimeError(event.messages);
+      if (mainRuntimeError) {
+        const judged = withMainRuntimeErrorProgress(withVerdict(verifying, mainRuntimeErrorVerdict(mainRuntimeError)), mainRuntimeError);
+        if (shouldStopAfterMainRuntimeError(judged)) {
+          const failed = withStatus(judged, "failed", {
+            stopReason: `Goal stopped after ${judged.stalledAttempts ?? 0} repeated main-model runtime errors without progress.`,
+          });
+          setRun(failed, ctx);
+          ctx.ui.notify(failed.stopReason ?? "Goal stopped after repeated main-model runtime errors.", "error");
+          return;
+        }
+
+        if (judged.attempt >= judged.maxAttempts) {
+          const failed = withStatus(judged, "failed", {
+            stopReason: `Goal reached maxAttempts (${judged.maxAttempts}) after a main-model runtime error.`,
+          });
+          setRun(failed, ctx);
+          ctx.ui.notify(`Goal failed after main-model runtime error on attempt ${failed.attempt}/${failed.maxAttempts}.`, "error");
+          return;
+        }
+
+        const retryRun = nextAttempt(judged);
+        setRun(retryRun, ctx);
+        ctx.ui.notify(`Goal attempt ${judged.attempt}/${judged.maxAttempts} hit a main-model runtime error.`, "warning");
+        sendUserMessage(buildRetryPrompt(judged, mainRuntimeErrorVerdict(mainRuntimeError)), ctx);
+        return;
+      }
+
+      let lastProgressUiAt = 0;
+      let transcriptProgressMessages = 0;
+      let transcriptSuppressed = false;
+      const publishProgress = (progress: GoalProgressSnapshot, immediate = false): void => {
+        activeProgress = progress;
+        if (!ctx.hasUI) return;
+        const now = Date.now();
+        if (immediate || now - lastProgressUiAt >= PROGRESS_UI_THROTTLE_MS) {
+          ctx.ui.setWorkingMessage(progress.action);
+          updateGoalUI(ctx, activeRun, activeProgress);
+          lastProgressUiAt = now;
+        }
+      };
+      const sendCappedVerifierMessage = (message: GoalVerifierFlowMessage, always = false): void => {
+        if (always) {
+          sendVerifierFlowMessage(message);
+          return;
+        }
+        if (transcriptProgressMessages < MAX_TRANSCRIPT_PROGRESS_MESSAGES) {
+          transcriptProgressMessages += 1;
+          sendVerifierFlowMessage(message);
+          return;
+        }
+        if (transcriptSuppressed) return;
+        transcriptSuppressed = true;
+        sendVerifierFlowMessage(createVerifierFlowMessage({
+          phase: "verifying",
+          status: "info",
+          title: "Verifier transcript progress capped",
+          lines: ["Further verifier tool progress remains visible in the goal widget and verifier log."],
+        }));
+      };
+      const updatePhase = (phase: GoalProgressPhase, action: string, lines: string[] = []): void => {
+        publishProgress(createGoalProgressSnapshot(phase, action, lines), true);
+      };
+      const handleEvidenceProgress = (progressEvent: EvidenceProgressEvent): void => {
+        const base = activeProgress ?? createGoalProgressSnapshot("collectingEvidence", "Collecting workspace evidence...");
+        if (progressEvent.type === "validation_start") {
+          publishProgress(appendProgressLine(base, `Running validation: ${progressEvent.command}`, `validation: ${progressEvent.command} -> running`), true);
+          sendCappedVerifierMessage(createVerifierFlowMessage({
+            phase: "collectingEvidence",
+            status: "running",
+            title: "Validation command started",
+            lines: [progressEvent.command],
+          }));
+          return;
+        }
+        publishProgress(appendProgressLine(base, `Validation finished: ${progressEvent.command}`, `validation: ${progressEvent.command} -> exit ${progressEvent.exitCode}`), true);
+        sendCappedVerifierMessage(createVerifierFlowMessage({
+          phase: "collectingEvidence",
+          status: progressEvent.exitCode === 0 ? "success" : "error",
+          title: "Validation command finished",
+          lines: [progressEvent.command, `Exit code: ${progressEvent.exitCode}`],
+        }));
+      };
+      const verifierProgressTracker = createVerifierProgressTracker();
+      const handleVerifierProgress = (progressEvent: VerifierProgressEvent): void => {
+        const result = verifierProgressTracker.handle(progressEvent);
+        const immediate = progressEvent.type !== "text_delta" && progressEvent.type !== "thinking_delta" && progressEvent.type !== "tool_update";
+        publishProgress(result.snapshot, immediate);
+        if (result.message) sendCappedVerifierMessage(result.message);
+      };
+
+      updatePhase("summarizing", "Summarizing visible goal session...");
       const sessionSummary = await summarizeSessionSafely(verifying, summaryModel, summaryThinkingLevel, ctx, config);
-      if (ctx.hasUI) ctx.ui.setWorkingMessage("Collecting workspace evidence...");
-      const evidence = await collectEvidence(ctx.cwd, ctx.sessionManager.getSessionFile(), sessionSummary, config.evidence);
-      if (ctx.hasUI) ctx.ui.setWorkingMessage("Verifying goal independently...");
+      updatePhase("collectingEvidence", "Collecting workspace evidence...");
+      sendCappedVerifierMessage(createVerifierStartedMessage(verifying.attempt, verifying.maxAttempts, verifierModelRef));
+      const evidence = await collectEvidence(ctx.cwd, ctx.sessionManager.getSessionFile(), sessionSummary, config.evidence, handleEvidenceProgress);
+      publishProgress(appendProgressLine(activeProgress ?? createGoalProgressSnapshot("collectingEvidence", "Workspace evidence collected."), "Workspace evidence collected.", "workspace evidence collected"), true);
+      updatePhase("verifying", "Verifying goal independently...", verifierProgressTracker.snapshot().lines);
 
       const verifierInput: VerifierInput = {
         goal: {
           ...verifying,
-          verifierModel: modelRefFromModel(model, verifierThinkingLevel),
-          summarizerModel: modelRefFromModel(summaryModel, summaryThinkingLevel),
+          verifierModel: verifierModelRef,
+          summarizerModel: summaryModelRef,
         },
         cwd: ctx.cwd,
         sessionFile: ctx.sessionManager.getSessionFile(),
@@ -230,7 +340,7 @@ export default function goalExtension(pi: ExtensionAPI): void {
         observerConfig: config.observer,
       };
 
-      const verdict = await verifier.verify(verifierInput);
+      const verdict = await verifier.verify(verifierInput, { onProgress: handleVerifierProgress });
       const logFile = await writeVerifierLog(verifying.verifierLogDir ?? goalLogDir(ctx.cwd, verifying.id), verifying.attempt, {
         input: {
           goal: verifierInput.goal,
@@ -242,12 +352,13 @@ export default function goalExtension(pi: ExtensionAPI): void {
         },
         verdict,
       });
+      sendVerifierFlowMessage(createVerifierVerdictMessage(verdict, logFile));
 
       const judgedBeforeSafety = withVerdict(
         {
           ...verifying,
-          verifierModel: modelRefFromModel(model, verifierThinkingLevel),
-          summarizerModel: modelRefFromModel(summaryModel, summaryThinkingLevel),
+          verifierModel: verifierModelRef,
+          summarizerModel: summaryModelRef,
         },
         {
           ...verdict,
@@ -287,7 +398,7 @@ export default function goalExtension(pi: ExtensionAPI): void {
 
       const retryRun = nextAttempt(judged);
       setRun(retryRun, ctx);
-      sendUserMessageAfterCurrentRun(buildRetryPrompt(judged, verdict));
+      sendUserMessage(buildRetryPrompt(judged, verdict), ctx);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       const failed = withStatus(withVerdict(activeRun, verifierErrorVerdict(message)), "failed");
@@ -295,13 +406,12 @@ export default function goalExtension(pi: ExtensionAPI): void {
       ctx.ui.notify(`Goal verifier failed: ${message}`, "error");
     } finally {
       verifierRunning = false;
-      if (ctx.hasUI) ctx.ui.setWorkingMessage();
-      updateGoalUI(ctx, activeRun);
+      setProgress(ctx, undefined);
     }
   });
 
   pi.on("session_shutdown", async (_event, ctx) => {
-    updateGoalUI(ctx, activeRun);
+    updateGoalUI(ctx, activeRun, activeProgress);
   });
 
   function handleAttemptGuardTrip(trip: AttemptGuardTrip, ctx: ExtensionContext): void {
@@ -355,6 +465,21 @@ export default function goalExtension(pi: ExtensionAPI): void {
       stalledRuntimeMs >= activeConfig.loopSafety.minStalledRuntimeMs
     );
   }
+
+  function withMainRuntimeErrorProgress(run: GoalRun, errorMessage: string): GoalRun {
+    const progressSignature = `main-runtime-error:${normalizeRuntimeError(errorMessage)}`;
+    const stalledAttempts = run.progressSignature === progressSignature ? (run.stalledAttempts ?? 0) + 1 : 0;
+    return {
+      ...run,
+      progressSignature,
+      stalledAttempts,
+      lastProgressAt: stalledAttempts === 0 ? Date.now() : run.lastProgressAt ?? run.startedAt,
+    };
+  }
+
+  function shouldStopAfterMainRuntimeError(run: GoalRun): boolean {
+    return (run.stalledAttempts ?? 0) >= 2;
+  }
 }
 
 async function loadConfig(ctx: ExtensionContext): Promise<GoalRuntimeConfig> {
@@ -402,6 +527,22 @@ function verifierErrorVerdict(message: string): VerifierVerdict {
     objections: [`Verifier runtime error: ${message}`],
     nextInstructions: "Fix the verifier/runtime issue, then rerun the goal.",
   };
+}
+
+function mainRuntimeErrorVerdict(message: string): VerifierVerdict {
+  return {
+    verdict: "FAIL",
+    confidence: 1,
+    summary: `The main model failed before producing any work: ${message}`,
+    evidence: [`main model runtime error: ${message}`],
+    objections: ["The main model produced no assistant content, no tool calls, and no verifiable workspace change."],
+    nextInstructions: "Switch to a working main model or fix the model runtime, then rerun the goal.",
+    steeringFeedback: "The selected main model is failing before it can work. Switch models or fix the model runtime before continuing.",
+  };
+}
+
+function normalizeRuntimeError(message: string): string {
+  return message.replace(/\s+/g, " ").trim().slice(0, 240);
 }
 
 function attemptGuardVerdict(trip: AttemptGuardTrip): VerifierVerdict {

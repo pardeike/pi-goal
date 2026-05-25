@@ -1,5 +1,5 @@
 node_modules/
 .DS_Store
 
-# Keep .pi/settings.json trackable; ignore generated verifier logs.
-.pi/goal/
+# Local Pi settings and verifier logs are machine/project state.
+.pi/

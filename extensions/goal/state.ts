@@ -136,6 +136,18 @@ export function extractLatestAssistantText(messages: unknown[]): string {
   return "";
 }
 
+export function latestAssistantRuntimeError(messages: unknown[]): string | undefined {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const message = messages[i] as { role?: unknown; content?: unknown; stopReason?: unknown; errorMessage?: unknown };
+    if (message.role !== "assistant") continue;
+    if (message.stopReason !== "error" || typeof message.errorMessage !== "string" || !message.errorMessage.trim()) continue;
+    const content = Array.isArray(message.content) ? message.content : [];
+    const hasContent = content.some((part) => part && typeof part === "object" && Object.keys(part as Record<string, unknown>).length > 0);
+    if (!hasContent) return message.errorMessage.trim();
+  }
+  return undefined;
+}
+
 export function truncate(text: string, maxChars: number): string {
   if (text.length <= maxChars) return text;
   return `${text.slice(0, maxChars - 80).trimEnd()}\n\n[truncated ${text.length - maxChars + 80} chars]`;

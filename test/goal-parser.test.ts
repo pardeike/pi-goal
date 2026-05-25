@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { createGoalRun, latestGoalRunFromEntries, parseGoalCommand } from "../extensions/goal/state.ts";
+import { createGoalRun, latestAssistantRuntimeError, latestGoalRunFromEntries, parseGoalCommand } from "../extensions/goal/state.ts";
 import { GOAL_STATE_CUSTOM_TYPE, type GoalStateEntry } from "../extensions/goal/types.ts";
 
 describe("parseGoalCommand", () => {
@@ -49,5 +49,34 @@ describe("latestGoalRunFromEntries", () => {
     ]);
 
     expect(restored?.objective).toBe("second");
+  });
+});
+
+describe("latestAssistantRuntimeError", () => {
+  it("detects an empty assistant turn that stopped with a runtime error", () => {
+    expect(
+      latestAssistantRuntimeError([
+        { role: "user", content: [{ type: "text", text: "start" }] },
+        {
+          role: "assistant",
+          content: [],
+          stopReason: "error",
+          errorMessage: "500 mlx runner failed",
+        },
+      ]),
+    ).toBe("500 mlx runner failed");
+  });
+
+  it("ignores error turns that still contain assistant content", () => {
+    expect(
+      latestAssistantRuntimeError([
+        {
+          role: "assistant",
+          content: [{ type: "text", text: "I made progress before failing." }],
+          stopReason: "error",
+          errorMessage: "tool failed",
+        },
+      ]),
+    ).toBeUndefined();
   });
 });

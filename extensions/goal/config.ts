@@ -1,4 +1,5 @@
 import { readFile } from "node:fs/promises";
+import { homedir } from "node:os";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import type { GoalAttemptGuardRuntimeConfig, GoalEvidenceRuntimeConfig, GoalLoopSafetyRuntimeConfig, GoalRoleRuntimeConfig, GoalRuntimeConfig, GoalThinkingLevel } from "./types.ts";
 
@@ -86,10 +87,25 @@ export function defaultGoalConfig(): GoalRuntimeConfig {
 }
 
 export async function loadGoalConfig(cwd: string, env: NodeJS.ProcessEnv = process.env): Promise<GoalRuntimeConfig> {
-  const loaded = await loadRawConfig(cwd, env);
+  const globalLoaded = await loadFirstRawConfig(globalConfigCandidates(cwd, env));
+  const localLoaded = await loadFirstRawConfig(localConfigCandidates(cwd, env));
   const config = defaultGoalConfig();
-  if (loaded.path) config.source = loaded.path;
 
+  if (globalLoaded.path) {
+    config.globalSource = globalLoaded.path;
+    await mergeConfig(config, globalLoaded, cwd);
+  }
+
+  if (localLoaded.path) {
+    config.source = localLoaded.path;
+    await mergeConfig(config, localLoaded, cwd);
+  }
+
+  applyEnvOverrides(config, env);
+  return config;
+}
+
+async function mergeConfig(config: GoalRuntimeConfig, loaded: LoadedRawConfig, cwd: string): Promise<void> {
   const observerRaw = mergeRawRole(loaded.config.verifier, loaded.config.observer);
   const summarizerRaw = mergeRawRole(loaded.config.summary, loaded.config.summarizer);
   mergeRole(config.observer, await resolvePromptFiles(observerRaw, cwd, loaded.path));
@@ -98,9 +114,6 @@ export async function loadGoalConfig(cwd: string, env: NodeJS.ProcessEnv = proce
   mergeAttemptGuard(config.attemptGuard, loaded.config.attemptGuard);
   mergeLoopSafety(config.loopSafety, loaded.config.loopSafety);
   config.maxAttempts = clampInt(numberFromUnknown(loaded.config.maxAttempts), config.maxAttempts, 1, 10_000);
-
-  applyEnvOverrides(config, env);
-  return config;
 }
 
 function applyEnvOverrides(config: GoalRuntimeConfig, env: NodeJS.ProcessEnv): void {
@@ -165,8 +178,8 @@ function applyRoleEnv(role: GoalRoleRuntimeConfig, env: NodeJS.ProcessEnv, keys:
   if (tools) role.tools = splitEnvList(tools);
 }
 
-async function loadRawConfig(cwd: string, env: NodeJS.ProcessEnv): Promise<LoadedRawConfig> {
-  for (const candidate of configCandidates(cwd, env)) {
+async function loadFirstRawConfig(candidates: string[]): Promise<LoadedRawConfig> {
+  for (const candidate of candidates) {
     try {
       const text = await readFile(candidate, "utf8");
       const parsed = JSON.parse(text);
@@ -183,16 +196,32 @@ async function loadRawConfig(cwd: string, env: NodeJS.ProcessEnv): Promise<Loade
   return { config: {} };
 }
 
-function configCandidates(cwd: string, env: NodeJS.ProcessEnv): string[] {
+function globalConfigCandidates(cwd: string, env: NodeJS.ProcessEnv): string[] {
+  const configured = env.PI_GOAL_GLOBAL_CONFIG?.trim();
+  if (configured) return [resolveConfiguredPath(configured, cwd)];
+
+  const agentDir = env.PI_CODING_AGENT_DIR?.trim()
+    ? resolveConfiguredPath(env.PI_CODING_AGENT_DIR, cwd)
+    : join(homedir(), ".pi", "agent");
+  return [join(agentDir, "pi-goal.config.json")];
+}
+
+function localConfigCandidates(cwd: string, env: NodeJS.ProcessEnv): string[] {
   const configured = env.PI_GOAL_CONFIG?.trim();
   if (configured) {
-    return [isAbsolute(configured) ? configured : resolve(cwd, configured)];
+    return [resolveConfiguredPath(configured, cwd)];
   }
   return [
     join(cwd, "pi-goal.config.json"),
     join(cwd, ".pi-goal.json"),
     join(cwd, ".pi", "goal.config.json"),
   ];
+}
+
+function resolveConfiguredPath(path: string, cwd: string): string {
+  if (path === "~") return homedir();
+  if (path.startsWith("~/")) return join(homedir(), path.slice(2));
+  return isAbsolute(path) ? path : resolve(cwd, path);
 }
 
 function mergeRawRole(base: RawGoalRoleConfig | undefined, override: RawGoalRoleConfig | undefined): RawGoalRoleConfig {

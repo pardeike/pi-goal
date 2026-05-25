@@ -49,7 +49,7 @@ describe("loadGoalConfig", () => {
       "utf8",
     );
 
-    const config = await loadGoalConfig(dir, {});
+    const config = await loadGoalConfig(dir, { PI_GOAL_GLOBAL_CONFIG: join(dir, "missing-global.json") });
 
     expect(config.maxAttempts).toBe(7);
     expect(config.source).toBe(join(dir, ".pi-goal.json"));
@@ -88,6 +88,7 @@ describe("loadGoalConfig", () => {
     );
 
     const config = await loadGoalConfig(dir, {
+      PI_GOAL_GLOBAL_CONFIG: join(dir, "missing-global.json"),
       PI_GOAL_OBSERVER_MODEL: "openai/gpt-4.1-mini",
       PI_GOAL_SUMMARIZER_THINKING: "minimal",
       PI_GOAL_VALIDATION_COMMANDS: "swift test;;npm test",
@@ -114,5 +115,62 @@ describe("loadGoalConfig", () => {
     expect(config.loopSafety.minAttemptsBeforeStallCheck).toBe(12);
     expect(config.loopSafety.maxStalledAttempts).toBe(7);
     expect(config.loopSafety.minStalledRuntimeMs).toBe(7200000);
+  });
+
+  it("loads global config before project config and lets project config override it", async () => {
+    const agentDir = await mkdtemp(join(tmpdir(), "pi-goal-agent-"));
+    const projectDir = await mkdtemp(join(tmpdir(), "pi-goal-config-"));
+    await mkdir(join(agentDir, "prompts"));
+    await writeFile(join(agentDir, "prompts", "observer-system.txt"), "Global observer prompt", "utf8");
+    await writeFile(
+      join(agentDir, "pi-goal.config.json"),
+      JSON.stringify({
+        maxAttempts: 100,
+        observer: {
+          model: "openai/gpt-4.1-mini",
+          thinking: "high",
+          systemPromptFile: "prompts/observer-system.txt",
+          tools: ["read", "bash", "grep"],
+        },
+        summarizer: {
+          model: "openai/gpt-4.1-nano",
+          thinking: "off",
+        },
+        evidence: {
+          validationCommandLimit: 4,
+          validationTimeoutMs: 300000,
+        },
+      }),
+      "utf8",
+    );
+    await writeFile(
+      join(projectDir, "pi-goal.config.json"),
+      JSON.stringify({
+        maxAttempts: 8,
+        observer: {
+          thinking: "low",
+        },
+        evidence: {
+          validationCommands: ["npm test"],
+          validationTimeoutMs: 45000,
+        },
+      }),
+      "utf8",
+    );
+
+    const config = await loadGoalConfig(projectDir, { PI_CODING_AGENT_DIR: agentDir });
+
+    expect(config.globalSource).toBe(join(agentDir, "pi-goal.config.json"));
+    expect(config.source).toBe(join(projectDir, "pi-goal.config.json"));
+    expect(config.maxAttempts).toBe(8);
+    expect(config.observer.model).toBe("openai/gpt-4.1-mini");
+    expect(config.observer.thinking).toBe("low");
+    expect(config.observer.systemPrompt).toBe("Global observer prompt");
+    expect(config.observer.tools).toEqual(["read", "bash", "grep"]);
+    expect(config.summarizer.model).toBe("openai/gpt-4.1-nano");
+    expect(config.summarizer.thinking).toBe("off");
+    expect(config.evidence.validationCommands).toEqual(["npm test"]);
+    expect(config.evidence.validationCommandLimit).toBe(4);
+    expect(config.evidence.validationTimeoutMs).toBe(45000);
   });
 });

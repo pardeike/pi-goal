@@ -13,20 +13,34 @@ npm install
 npm run check
 ```
 
-Install this checkout into a target repo's local Pi configuration:
+Install this checkout into your user-global Pi configuration:
 
 ```bash
-cd /path/to/target/repo
 /path/to/pi-goal/install.sh
 ```
 
-or from this repo:
+or from this repository:
+
+```bash
+./install.sh
+```
+
+The installer runs `npm install`, `npm run check`, smoke-loads the extension, runs `pi install <this repo>`, and creates a non-overwriting global config template at `~/.pi/agent/pi-goal.config.json` or `PI_CODING_AGENT_DIR/pi-goal.config.json`. Use `--skip-check`, `--skip-smoke`, or `--skip-config` when you need a faster or narrower reinstall.
+
+Install into one target repo's local Pi configuration only when you need project-specific behavior:
+
+```bash
+cd /path/to/target/repo
+/path/to/pi-goal/install.sh --local
+```
+
+or from this repository:
 
 ```bash
 ./install.sh --target /path/to/target/repo
 ```
 
-The installer runs `npm install`, `npm run check`, smoke-loads the extension, and then runs `pi install <this repo> -l` in the target directory. Use `--skip-check` or `--skip-smoke` when you need a faster local reinstall.
+Both local forms run `pi install <this repo> -l` in the target directory and write that repo's `.pi/settings.json`.
 
 Run Pi with the extension for a one-off test:
 
@@ -34,14 +48,26 @@ Run Pi with the extension for a one-off test:
 npm exec -- pi --no-extensions -e ./extensions/goal/index.ts
 ```
 
-Install it project-locally into a target repo:
+Install it manually into the user-global Pi configuration:
+
+```bash
+pi install /path/to/pi-goal
+```
+
+Install it manually project-locally into a target repo:
 
 ```bash
 cd /path/to/target/repo
 pi install /path/to/pi-goal -l
 ```
 
-If `pi` is not on `PATH`, use this project's local Pi binary:
+If `pi` is not on `PATH`, use this project's local Pi binary. For a user-global install:
+
+```bash
+npm exec --prefix /path/to/pi-goal -- pi install /path/to/pi-goal
+```
+
+For a project-local install:
 
 ```bash
 cd /path/to/target/repo
@@ -85,13 +111,28 @@ The Pi TUI footer and goal widget show the active objective, attempt count, curr
 
 ## Configuration
 
-Project config is read from the first existing file:
+Configuration is layered from broad defaults to project-specific overrides:
+
+1. built-in defaults
+2. global goal config
+3. project goal config
+4. `PI_GOAL_*` environment variables
+
+Global goal config is read from:
+
+- `PI_GOAL_GLOBAL_CONFIG`, when set
+- otherwise `PI_CODING_AGENT_DIR/pi-goal.config.json`
+- otherwise `~/.pi/agent/pi-goal.config.json`
+
+The global installer creates this file if it does not already exist. The template leaves model and thinking fields blank so behavior stays close to built-in defaults until you edit it.
+
+Project goal config is read from the first existing file:
 
 - `pi-goal.config.json`
 - `.pi-goal.json`
 - `.pi/goal.config.json`
 
-Set `PI_GOAL_CONFIG=/path/to/config.json` to use a specific file.
+Set `PI_GOAL_CONFIG=/path/to/config.json` to use a specific project config file while still inheriting global goal config. Project config overrides only the fields it specifies, so a global file is a good place for stable choices such as `observer.model`, `summarizer.model`, model thinking levels, and shared guard limits. Keep project-specific validation commands in the local project config.
 
 Example:
 

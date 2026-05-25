@@ -1,5 +1,6 @@
 import { join } from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { createAttemptGuardMetrics, recordAttemptGuardUpdate, type AttemptGuardTrip } from "./attempt-guard.ts";
 import { defaultGoalConfig, loadGoalConfig } from "./config.ts";
 import { buildInitialGoalPrompt, buildRetryPrompt } from "./prompts.ts";
 import { createGoalRun, extractLatestAssistantText, formatModelRef, goalStateEntry, isActive, latestGoalRunFromEntries, modelRefFromModel, nextAttempt, parseGoalCommand, withStatus, withVerdict } from "./state.ts";
@@ -10,7 +11,11 @@ import { collectEvidence, SdkSessionSummarizerAdapter, SdkVerifierAdapter, write
 
 export default function goalExtension(pi: ExtensionAPI): void {
   let activeRun: GoalRun | undefined;
+  let activeConfig: GoalRuntimeConfig = defaultGoalConfig();
   let verifierRunning = false;
+  let activeAgentTurnId = 0;
+  let guardAbortedTurnId: number | undefined;
+  let attemptMetrics = createAttemptGuardMetrics();
   const verifier: VerifierAdapter = new SdkVerifierAdapter();
   const summarizer: SessionSummarizerAdapter = new SdkSessionSummarizerAdapter();
 
@@ -59,6 +64,11 @@ export default function goalExtension(pi: ExtensionAPI): void {
         generatedAt: new Date().toISOString(),
         entryCount: ctx.sessionManager.getEntries().length,
         summary: `Session summarizer failed: ${message}`,
+        files: [],
+        commands: [],
+        claims: [],
+        openIssues: [`Session summarizer failed: ${message}`],
+        toolErrors: [],
         model: modelRefFromModel(model, thinkingLevel),
       };
     }
@@ -108,6 +118,7 @@ export default function goalExtension(pi: ExtensionAPI): void {
       }
 
       const config = await loadConfig(ctx);
+      activeConfig = config;
       const verifierModel = resolveConfiguredModel(ctx, config.observer.model) ?? ctx.model;
       const summarizerModel = resolveConfiguredModel(ctx, config.summarizer.model) ?? verifierModel ?? ctx.model;
       const verifierThinkingLevel = thinkingLevelFor(config.observer, pi);
@@ -151,12 +162,28 @@ export default function goalExtension(pi: ExtensionAPI): void {
   });
 
   pi.on("agent_start", async (_event, ctx) => {
+    activeAgentTurnId += 1;
+    attemptMetrics = createAttemptGuardMetrics();
     if (!isActive(activeRun)) return;
     updateGoalUI(ctx, activeRun);
   });
 
+  pi.on("message_update", async (event, ctx) => {
+    if (!activeRun || activeRun.status !== "running" || verifierRunning) return;
+    if (guardAbortedTurnId === activeAgentTurnId) return;
+    const trip = recordAttemptGuardUpdate(attemptMetrics, event, activeConfig.attemptGuard);
+    if (!trip) return;
+    guardAbortedTurnId = activeAgentTurnId;
+    handleAttemptGuardTrip(trip, ctx);
+  });
+
   pi.on("agent_end", async (event, ctx) => {
     if (!activeRun || activeRun.status !== "running" || verifierRunning) return;
+    if (guardAbortedTurnId === activeAgentTurnId) {
+      guardAbortedTurnId = undefined;
+      updateGoalUI(ctx, activeRun);
+      return;
+    }
 
     verifierRunning = true;
     try {
@@ -168,6 +195,7 @@ export default function goalExtension(pi: ExtensionAPI): void {
       if (ctx.hasUI) ctx.ui.setWorkingMessage("Preparing independent goal evidence...");
 
       const config = await loadConfig(ctx);
+      activeConfig = config;
       const model = resolveConfiguredModel(ctx, config.observer.model) ?? ctx.model;
       if (!model) {
         const failed = withStatus(withVerdict(verifying, missingModelVerdict()), "failed");
@@ -258,6 +286,26 @@ export default function goalExtension(pi: ExtensionAPI): void {
   pi.on("session_shutdown", async (_event, ctx) => {
     updateGoalUI(ctx, activeRun);
   });
+
+  function handleAttemptGuardTrip(trip: AttemptGuardTrip, ctx: ExtensionContext): void {
+    if (!activeRun || activeRun.status !== "running") return;
+
+    const verdict = attemptGuardVerdict(trip);
+    const judged = withVerdict(activeRun, verdict);
+    ctx.abort();
+
+    if (judged.attempt >= judged.maxAttempts) {
+      const failed = withStatus(judged, "failed");
+      setRun(failed, ctx);
+      ctx.ui.notify(`Goal failed after attempt guard aborted attempt ${failed.attempt}/${failed.maxAttempts}.`, "error");
+      return;
+    }
+
+    const retryRun = nextAttempt(judged);
+    setRun(retryRun, ctx);
+    ctx.ui.notify(`Goal attempt ${judged.attempt}/${judged.maxAttempts} aborted by attempt guard.`, "warning");
+    sendUserMessage(buildRetryPrompt(judged, verdict), ctx);
+  }
 }
 
 async function loadConfig(ctx: ExtensionContext): Promise<GoalRuntimeConfig> {
@@ -304,5 +352,24 @@ function verifierErrorVerdict(message: string): VerifierVerdict {
     evidence: [],
     objections: [`Verifier runtime error: ${message}`],
     nextInstructions: "Fix the verifier/runtime issue, then rerun the goal.",
+  };
+}
+
+function attemptGuardVerdict(trip: AttemptGuardTrip): VerifierVerdict {
+  const metrics = trip.metrics;
+  return {
+    verdict: "FAIL",
+    confidence: 1,
+    summary: `The main attempt was aborted before verification because ${trip.reason}.`,
+    evidence: [
+      `message updates: ${metrics.messageUpdates}`,
+      `assistant delta chars: ${metrics.assistantDeltaChars}`,
+      `whitespace delta chars: ${metrics.whitespaceDeltaChars}`,
+      `largest single delta chars: ${metrics.largestDeltaChars}`,
+      `last stream event type: ${metrics.lastEventType ?? "unknown"}`,
+    ],
+    objections: ["The main model did not produce a complete, verifiable attempt before the stream became pathological."],
+    nextInstructions: "Continue with a smaller, concrete edit plan. Avoid giant or malformed edit tool calls. Read the target file, make one targeted change at a time, then run validation.",
+    steeringFeedback: "Stop the malformed edit stream. Make one small targeted edit, then run validation.",
   };
 }

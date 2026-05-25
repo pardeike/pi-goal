@@ -1,6 +1,6 @@
 import { readFile } from "node:fs/promises";
 import { dirname, isAbsolute, join, resolve } from "node:path";
-import type { GoalEvidenceRuntimeConfig, GoalRoleRuntimeConfig, GoalRuntimeConfig, GoalThinkingLevel } from "./types.ts";
+import type { GoalAttemptGuardRuntimeConfig, GoalEvidenceRuntimeConfig, GoalRoleRuntimeConfig, GoalRuntimeConfig, GoalThinkingLevel } from "./types.ts";
 
 const THINKING_LEVELS = new Set<GoalThinkingLevel>(["off", "minimal", "low", "medium", "high", "xhigh"]);
 const DEFAULT_OBSERVER_TOOLS = ["read", "bash", "grep", "find", "ls"];
@@ -24,6 +24,13 @@ interface RawGoalEvidenceConfig {
   validationTimeoutMs?: unknown;
 }
 
+interface RawGoalAttemptGuardConfig {
+  enabled?: unknown;
+  maxSingleDeltaChars?: unknown;
+  maxAssistantDeltaChars?: unknown;
+  maxWhitespaceDeltaChars?: unknown;
+}
+
 interface RawGoalConfig {
   maxAttempts?: unknown;
   observer?: RawGoalRoleConfig;
@@ -31,6 +38,7 @@ interface RawGoalConfig {
   summarizer?: RawGoalRoleConfig;
   summary?: RawGoalRoleConfig;
   evidence?: RawGoalEvidenceConfig;
+  attemptGuard?: RawGoalAttemptGuardConfig;
 }
 
 interface LoadedRawConfig {
@@ -52,6 +60,12 @@ export function defaultGoalConfig(): GoalRuntimeConfig {
       validationCommandLimit: 3,
       validationTimeoutMs: 120_000,
     },
+    attemptGuard: {
+      enabled: true,
+      maxSingleDeltaChars: 64_000,
+      maxAssistantDeltaChars: 512_000,
+      maxWhitespaceDeltaChars: 32_000,
+    },
   };
 }
 
@@ -65,6 +79,7 @@ export async function loadGoalConfig(cwd: string, env: NodeJS.ProcessEnv = proce
   mergeRole(config.observer, await resolvePromptFiles(observerRaw, cwd, loaded.path));
   mergeRole(config.summarizer, await resolvePromptFiles(summarizerRaw, cwd, loaded.path));
   mergeEvidence(config.evidence, loaded.config.evidence);
+  mergeAttemptGuard(config.attemptGuard, loaded.config.attemptGuard);
   config.maxAttempts = clampInt(numberFromUnknown(loaded.config.maxAttempts), config.maxAttempts, 1, 20);
 
   applyEnvOverrides(config, env);
@@ -98,6 +113,12 @@ function applyEnvOverrides(config: GoalRuntimeConfig, env: NodeJS.ProcessEnv): v
   if (extraValidationCommands.length > 0) config.evidence.extraValidationCommands = extraValidationCommands;
   config.evidence.validationCommandLimit = clampInt(parseEnvInt(env.PI_GOAL_VALIDATION_COMMAND_LIMIT), config.evidence.validationCommandLimit, 0, 10);
   config.evidence.validationTimeoutMs = clampInt(parseEnvInt(env.PI_GOAL_VALIDATION_TIMEOUT_MS), config.evidence.validationTimeoutMs, 5_000, 600_000);
+
+  const guardEnabled = parseEnvBool(env.PI_GOAL_ATTEMPT_GUARD_ENABLED);
+  if (guardEnabled !== undefined) config.attemptGuard.enabled = guardEnabled;
+  config.attemptGuard.maxSingleDeltaChars = clampInt(parseEnvInt(env.PI_GOAL_ATTEMPT_MAX_SINGLE_DELTA_CHARS), config.attemptGuard.maxSingleDeltaChars, 4_096, 2_000_000);
+  config.attemptGuard.maxAssistantDeltaChars = clampInt(parseEnvInt(env.PI_GOAL_ATTEMPT_MAX_ASSISTANT_DELTA_CHARS), config.attemptGuard.maxAssistantDeltaChars, 16_384, 10_000_000);
+  config.attemptGuard.maxWhitespaceDeltaChars = clampInt(parseEnvInt(env.PI_GOAL_ATTEMPT_MAX_WHITESPACE_DELTA_CHARS), config.attemptGuard.maxWhitespaceDeltaChars, 4_096, 2_000_000);
 }
 
 function applyRoleEnv(role: GoalRoleRuntimeConfig, env: NodeJS.ProcessEnv, keys: Record<"model" | "thinking" | "systemPrompt" | "promptTemplate" | "extraInstructions" | "tools", string[]>): void {
@@ -194,6 +215,15 @@ function mergeEvidence(target: GoalEvidenceRuntimeConfig, raw: RawGoalEvidenceCo
   target.validationTimeoutMs = clampInt(numberFromUnknown(raw.validationTimeoutMs), target.validationTimeoutMs, 5_000, 600_000);
 }
 
+function mergeAttemptGuard(target: GoalAttemptGuardRuntimeConfig, raw: RawGoalAttemptGuardConfig | undefined): void {
+  if (!raw) return;
+  const enabled = boolFromUnknown(raw.enabled);
+  if (enabled !== undefined) target.enabled = enabled;
+  target.maxSingleDeltaChars = clampInt(numberFromUnknown(raw.maxSingleDeltaChars), target.maxSingleDeltaChars, 4_096, 2_000_000);
+  target.maxAssistantDeltaChars = clampInt(numberFromUnknown(raw.maxAssistantDeltaChars), target.maxAssistantDeltaChars, 16_384, 10_000_000);
+  target.maxWhitespaceDeltaChars = clampInt(numberFromUnknown(raw.maxWhitespaceDeltaChars), target.maxWhitespaceDeltaChars, 4_096, 2_000_000);
+}
+
 function normalizeThinking(value: unknown): GoalThinkingLevel | undefined {
   return typeof value === "string" && THINKING_LEVELS.has(value as GoalThinkingLevel) ? (value as GoalThinkingLevel) : undefined;
 }
@@ -222,6 +252,20 @@ function splitEnvList(value: string | undefined): string[] {
 function parseEnvInt(value: string | undefined): number | undefined {
   if (!value?.trim()) return undefined;
   return numberFromUnknown(value);
+}
+
+function parseEnvBool(value: string | undefined): boolean | undefined {
+  if (!value?.trim()) return undefined;
+  return boolFromUnknown(value);
+}
+
+function boolFromUnknown(value: unknown): boolean | undefined {
+  if (typeof value === "boolean") return value;
+  if (typeof value !== "string") return undefined;
+  const normalized = value.trim().toLowerCase();
+  if (["1", "true", "yes", "on"].includes(normalized)) return true;
+  if (["0", "false", "no", "off"].includes(normalized)) return false;
+  return undefined;
 }
 
 function numberFromUnknown(value: unknown): number | undefined {

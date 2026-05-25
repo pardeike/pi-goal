@@ -43,6 +43,11 @@ describe("detectValidationCommands", () => {
       generatedAt: "2026-05-25T00:00:00.000Z",
       entryCount: 1,
       summary: "The agent claimed validation without proof.",
+      files: ["src/index.ts"],
+      commands: [],
+      claims: ["validation passed"],
+      openIssues: ["validation was not shown"],
+      toolErrors: [],
     });
 
     expect(evidence.readmeExcerpt.content).toContain("Run npm test");

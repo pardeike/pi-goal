@@ -1,7 +1,8 @@
 import { describe, expect, it } from "vitest";
+import { createAttemptGuardMetrics, recordAttemptGuardUpdate } from "../extensions/goal/attempt-guard.ts";
 import { buildInitialGoalPrompt, buildRetryPrompt, buildSessionSummaryPrompt, buildVerifierPrompt } from "../extensions/goal/prompts.ts";
 import { createGoalRun } from "../extensions/goal/state.ts";
-import type { EvidenceBundle, VerifierVerdict } from "../extensions/goal/types.ts";
+import type { EvidenceBundle, GoalAttemptGuardRuntimeConfig, VerifierVerdict } from "../extensions/goal/types.ts";
 
 describe("goal prompts", () => {
   it("keeps main work visible and evidence-driven", () => {
@@ -23,6 +24,7 @@ describe("goal prompts", () => {
       objections: ["npm test was not run"],
       nextInstructions: "Run npm test and fix failures.",
       steeringFeedback: "Stop summarizing and run npm test now.",
+      observerMemory: "Attempt 1 changed files but did not run npm test.",
     };
 
     const prompt = buildRetryPrompt(run, verdict);
@@ -31,10 +33,14 @@ describe("goal prompts", () => {
     expect(prompt).toContain("npm test was not run");
     expect(prompt).toContain("Run npm test and fix failures.");
     expect(prompt).toContain("Stop summarizing and run npm test now.");
+    expect(prompt).toContain("Observer memory");
   });
 
   it("makes verifier instructions skeptical and read-only", () => {
-    const run = createGoalRun({ objective: "ship the feature" });
+    const run = {
+      ...createGoalRun({ objective: "ship the feature" }),
+      observerMemory: "Attempt 1 edited src/a.ts but npm test failed.",
+    };
     const evidence = fakeEvidence();
 
     const prompt = buildVerifierPrompt({
@@ -47,6 +53,8 @@ describe("goal prompts", () => {
     expect(prompt).toContain("Do not modify files");
     expect(prompt).toContain("Return only strict JSON");
     expect(prompt).toContain("steeringFeedback");
+    expect(prompt).toContain("observerMemory");
+    expect(prompt).toContain("Attempt 1 edited src/a.ts");
     expect(prompt).toContain("Model-generated comprehensive session log summary");
     expect(prompt).toContain("npm test");
   });
@@ -61,6 +69,7 @@ describe("goal prompts", () => {
 
     expect(prompt).toContain("Summarize this Pi session log comprehensively");
     expect(prompt).toContain("Do not judge whether the goal is complete");
+    expect(prompt).toContain("Return only strict JSON");
     expect(prompt).toContain("/goal fix validation");
   });
 
@@ -71,7 +80,7 @@ describe("goal prompts", () => {
       run,
       evidence,
       latestAssistantSummary: "Done.",
-      promptTemplate: "OBSERVE {{goal}}\n{{latestAssistantSummary}}\n{{evidence}}",
+      promptTemplate: "OBSERVE {{goal}}\n{{observerMemory}}\n{{latestAssistantSummary}}\n{{evidence}}",
     });
     const summaryPrompt = buildSessionSummaryPrompt({
       run,
@@ -81,9 +90,37 @@ describe("goal prompts", () => {
     });
 
     expect(observerPrompt).toContain("OBSERVE fix validation");
+    expect(observerPrompt).toContain("(none yet)");
     expect(observerPrompt).toContain("Done.");
     expect(observerPrompt).toContain("Captured validation command output");
-    expect(summaryPrompt).toBe("SUMMARIZE fix validation 1 #1 user goal");
+    expect(observerPrompt).toContain("Mandatory structured output");
+    expect(summaryPrompt).toContain("SUMMARIZE fix validation 1 #1 user goal");
+    expect(summaryPrompt).toContain("Mandatory structured output");
+    expect(summaryPrompt).toContain('"toolErrors"');
+  });
+
+  it("trips the attempt guard on pathological stream deltas", () => {
+    const metrics = createAttemptGuardMetrics();
+    const config: GoalAttemptGuardRuntimeConfig = {
+      enabled: true,
+      maxSingleDeltaChars: 10,
+      maxAssistantDeltaChars: 100,
+      maxWhitespaceDeltaChars: 20,
+    };
+
+    const trip = recordAttemptGuardUpdate(
+      metrics,
+      {
+        assistantMessageEvent: {
+          type: "toolcall_delta",
+          delta: " ".repeat(32),
+        },
+      },
+      config,
+    );
+
+    expect(trip?.reason).toContain("oversized toolcall_delta delta");
+    expect(trip?.metrics.whitespaceDeltaChars).toBe(32);
   });
 });
 
@@ -146,6 +183,11 @@ function fakeEvidence(): EvidenceBundle {
       generatedAt: "2026-05-25T00:00:00.000Z",
       entryCount: 4,
       summary: "The agent changed src/a.ts but did not run npm test.",
+      files: ["src/a.ts"],
+      commands: [],
+      claims: ["Done."],
+      openIssues: ["npm test was not run"],
+      toolErrors: [],
     },
   };
 }

@@ -17,10 +17,12 @@ describe("TUI formatting", () => {
       objections: ["No test command was run."],
       nextInstructions: "Run npm test.",
       steeringFeedback: "Run the validation command before summarizing.",
+      observerMemory: "Attempt 1 changed code but did not run validation.",
     });
 
     expect(formatWidget(run)).toContain("Blocking: No test command was run.");
     expect(formatWidget(run)).toContain("Steer: Run the validation command before summarizing.");
     expect(formatWidget(run)).toContain("Next: Run npm test.");
+    expect(formatWidget(run)).toContain("Observer memory: Attempt 1 changed code but did not run validation.");
   });
 });

@@ -17,7 +17,7 @@ const FILE_LIST_LIMIT = 200;
 const SESSION_LOG_LIMIT = 80_000;
 const SESSION_SUMMARY_LIMIT = 20_000;
 const DEFAULT_OBSERVER_SYSTEM_PROMPT = "You are a skeptical independent goal observer. Audit completion using real workspace evidence. Do not modify files. Return only the requested strict JSON.";
-const DEFAULT_SUMMARIZER_SYSTEM_PROMPT = "You summarize Pi coding-agent session logs for a separate evaluator. Be factual, comprehensive, and concise. Return plain text only.";
+const DEFAULT_SUMMARIZER_SYSTEM_PROMPT = "You summarize Pi coding-agent session logs for a separate evaluator. Be factual, comprehensive, concise, and return only the requested strict JSON.";
 const IGNORED_DIRS = new Set([".git", ".hg", ".svn", ".pi", ".build", ".swiftpm", "node_modules", "dist", "build", "target", ".next", ".turbo", ".venv", "venv", "__pycache__"]);
 const SOURCE_EXTENSIONS = new Set([".c", ".cc", ".cpp", ".cs", ".css", ".go", ".h", ".hpp", ".html", ".java", ".js", ".jsx", ".kt", ".m", ".mm", ".php", ".py", ".rb", ".rs", ".scala", ".sh", ".swift", ".ts", ".tsx", ".vue"]);
 
@@ -91,10 +91,11 @@ export class SdkSessionSummarizerAdapter implements SessionSummarizerAdapter {
     try {
       await session.prompt(prompt, { expandPromptTemplates: false, source: "extension" });
       const output = extractLatestAssistantText(session.messages);
+      const parsed = parseSessionSummaryOutput(output);
       return {
         generatedAt: new Date().toISOString(),
         entryCount: input.entries.length,
-        summary: truncate(output || "(session summarizer returned no text)", SESSION_SUMMARY_LIMIT),
+        ...parsed,
         model: modelRefFromModel(input.model, input.thinkingLevel),
         rawOutput: output,
       };
@@ -156,16 +157,43 @@ export function parseVerifierOutput(rawOutput: string): VerifierVerdict {
   if (verdict !== "PASS" && verdict !== "FAIL") {
     return failFromParser(raw, "Verifier JSON did not contain verdict PASS or FAIL.");
   }
+  const shapeError = validateVerifierShape(candidate);
+  if (shapeError) {
+    return failFromParser(raw, `Verifier JSON shape invalid: ${shapeError}`);
+  }
 
   return {
     verdict,
-    confidence: clampConfidence(candidate.confidence),
-    summary: stringOrDefault(candidate.summary, verdict === "PASS" ? "Verifier accepted the goal." : "Verifier rejected the goal."),
+    confidence: clampConfidence(candidate.confidence as number),
+    summary: (candidate.summary as string).trim(),
     evidence: stringArray(candidate.evidence),
     objections: stringArray(candidate.objections),
-    nextInstructions: stringOrDefault(candidate.nextInstructions, verdict === "PASS" ? "" : "Produce concrete evidence that satisfies the goal."),
+    nextInstructions: (candidate.nextInstructions as string).trim(),
     steeringFeedback: stringOrUndefined(candidate.steeringFeedback, 500),
+    observerMemory: stringOrUndefined(candidate.observerMemory, 4_000),
     rawOutput: raw,
+  };
+}
+
+export function parseSessionSummaryOutput(rawOutput: string): Omit<SessionSummaryEvidence, "generatedAt" | "entryCount" | "model" | "rawOutput"> {
+  const raw = rawOutput.trim();
+  const parsed = parseJsonObject(raw);
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    return failedSessionSummary(raw, "Session summarizer did not return parseable strict JSON.");
+  }
+
+  const candidate = parsed as Partial<SessionSummaryEvidence>;
+  if (typeof candidate.summary !== "string" || !candidate.summary.trim()) {
+    return failedSessionSummary(raw, "Session summarizer JSON did not contain a non-empty summary string.");
+  }
+
+  return {
+    summary: truncate(candidate.summary.trim(), SESSION_SUMMARY_LIMIT),
+    files: stringArray(candidate.files),
+    commands: stringArray(candidate.commands),
+    claims: stringArray(candidate.claims),
+    openIssues: stringArray(candidate.openIssues),
+    toolErrors: stringArray(candidate.toolErrors),
   };
 }
 
@@ -526,13 +554,32 @@ function failFromParser(rawOutput: string, summary: string): VerifierVerdict {
   };
 }
 
+function failedSessionSummary(rawOutput: string, issue: string): Omit<SessionSummaryEvidence, "generatedAt" | "entryCount" | "model" | "rawOutput"> {
+  return {
+    summary: issue,
+    files: [],
+    commands: [],
+    claims: [],
+    openIssues: [issue],
+    toolErrors: rawOutput ? [`raw summarizer output: ${truncate(rawOutput, 2_000)}`] : [],
+  };
+}
+
+function validateVerifierShape(candidate: Partial<VerifierVerdict>): string | undefined {
+  if (typeof candidate.confidence !== "number" || Number.isNaN(candidate.confidence)) return "confidence must be a number";
+  if (typeof candidate.summary !== "string" || !candidate.summary.trim()) return "summary must be a non-empty string";
+  if (!Array.isArray(candidate.evidence) || !candidate.evidence.every((item) => typeof item === "string")) return "evidence must be an array of strings";
+  if (!Array.isArray(candidate.objections) || !candidate.objections.every((item) => typeof item === "string")) return "objections must be an array of strings";
+  if (typeof candidate.nextInstructions !== "string") return "nextInstructions must be a string";
+  if (typeof candidate.steeringFeedback !== "string") return "steeringFeedback must be a string";
+  if (typeof candidate.observerMemory !== "string") return "observerMemory must be a string";
+  if (candidate.verdict === "FAIL" && !candidate.steeringFeedback.trim()) return "steeringFeedback must be non-empty for FAIL";
+  return undefined;
+}
+
 function clampConfidence(value: unknown): number {
   if (typeof value !== "number" || Number.isNaN(value)) return 0;
   return Math.max(0, Math.min(1, value));
-}
-
-function stringOrDefault(value: unknown, fallback: string): string {
-  return typeof value === "string" && value.trim() ? value.trim() : fallback;
 }
 
 function stringOrUndefined(value: unknown, maxChars: number): string | undefined {

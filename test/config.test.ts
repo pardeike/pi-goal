@@ -32,6 +32,12 @@ describe("loadGoalConfig", () => {
           validationCommandLimit: 2,
           validationTimeoutMs: 45000,
         },
+        attemptGuard: {
+          enabled: false,
+          maxSingleDeltaChars: 12345,
+          maxAssistantDeltaChars: 23456,
+          maxWhitespaceDeltaChars: 34567,
+        },
       }),
       "utf8",
     );
@@ -47,6 +53,10 @@ describe("loadGoalConfig", () => {
     expect(config.evidence.validationCommands).toEqual(["npm test"]);
     expect(config.evidence.extraValidationCommands).toEqual(["npm run lint"]);
     expect(config.evidence.validationTimeoutMs).toBe(45000);
+    expect(config.attemptGuard.enabled).toBe(false);
+    expect(config.attemptGuard.maxSingleDeltaChars).toBe(12345);
+    expect(config.attemptGuard.maxAssistantDeltaChars).toBe(23456);
+    expect(config.attemptGuard.maxWhitespaceDeltaChars).toBe(34567);
   });
 
   it("applies environment overrides and verifier/summary aliases", async () => {
@@ -70,6 +80,8 @@ describe("loadGoalConfig", () => {
       PI_GOAL_SUMMARIZER_THINKING: "minimal",
       PI_GOAL_VALIDATION_COMMANDS: "swift test;;npm test",
       PI_GOAL_VALIDATION_COMMAND_LIMIT: "1",
+      PI_GOAL_ATTEMPT_GUARD_ENABLED: "true",
+      PI_GOAL_ATTEMPT_MAX_SINGLE_DELTA_CHARS: "50000",
     });
 
     expect(config.observer.model).toBe("openai/gpt-4.1-mini");
@@ -78,5 +90,7 @@ describe("loadGoalConfig", () => {
     expect(config.summarizer.thinking).toBe("minimal");
     expect(config.evidence.validationCommands).toEqual(["swift test", "npm test"]);
     expect(config.evidence.validationCommandLimit).toBe(1);
+    expect(config.attemptGuard.enabled).toBe(true);
+    expect(config.attemptGuard.maxSingleDeltaChars).toBe(50000);
   });
 });

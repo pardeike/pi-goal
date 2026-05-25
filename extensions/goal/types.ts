@@ -30,12 +30,20 @@ export interface GoalEvidenceRuntimeConfig {
   validationTimeoutMs: number;
 }
 
+export interface GoalAttemptGuardRuntimeConfig {
+  enabled: boolean;
+  maxSingleDeltaChars: number;
+  maxAssistantDeltaChars: number;
+  maxWhitespaceDeltaChars: number;
+}
+
 export interface GoalRuntimeConfig {
   source?: string;
   maxAttempts: number;
   observer: GoalRoleRuntimeConfig;
   summarizer: GoalRoleRuntimeConfig;
   evidence: GoalEvidenceRuntimeConfig;
+  attemptGuard: GoalAttemptGuardRuntimeConfig;
 }
 
 export interface GoalRun {
@@ -49,6 +57,7 @@ export interface GoalRun {
   mainModel?: GoalModelRef;
   verifierModel?: GoalModelRef;
   summarizerModel?: GoalModelRef;
+  observerMemory?: string;
   lastVerdict?: VerifierVerdict;
   lastMainLeafId?: string | null;
   verifierLogDir?: string;
@@ -102,6 +111,11 @@ export interface SessionSummaryEvidence {
   generatedAt: string;
   entryCount: number;
   summary: string;
+  files: string[];
+  commands: string[];
+  claims: string[];
+  openIssues: string[];
+  toolErrors: string[];
   model?: GoalModelRef;
   rawOutput?: string;
 }
@@ -130,6 +144,7 @@ export interface VerifierVerdict {
   objections: string[];
   nextInstructions: string;
   steeringFeedback?: string;
+  observerMemory?: string;
   rawOutput?: string;
 }
 

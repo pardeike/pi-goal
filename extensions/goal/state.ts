@@ -4,6 +4,7 @@ import { GOAL_STATE_CUSTOM_TYPE, type GoalCommand, type GoalModelRef, type GoalR
 
 const SUBCOMMANDS = new Set(["status", "cancel", "help"]);
 const MAX_SUMMARY_CHARS = 6_000;
+const MAX_OBSERVER_MEMORY_CHARS = 4_000;
 
 export function parseGoalCommand(args: string): ParsedCommand {
   const trimmed = args.trim();
@@ -69,9 +70,11 @@ export function withStatus(run: GoalRun, status: GoalRun["status"], extra?: Part
 }
 
 export function withVerdict(run: GoalRun, verdict: VerifierVerdict): GoalRun {
+  const observerMemory = normalizeObserverMemory(verdict.observerMemory) ?? run.observerMemory;
   return {
     ...run,
     lastVerdict: verdict,
+    observerMemory,
     updatedAt: Date.now(),
   };
 }
@@ -136,6 +139,11 @@ export function extractLatestAssistantText(messages: unknown[]): string {
 export function truncate(text: string, maxChars: number): string {
   if (text.length <= maxChars) return text;
   return `${text.slice(0, maxChars - 80).trimEnd()}\n\n[truncated ${text.length - maxChars + 80} chars]`;
+}
+
+export function normalizeObserverMemory(value: string | undefined): string | undefined {
+  if (!value?.trim()) return undefined;
+  return truncate(value.trim(), MAX_OBSERVER_MEMORY_CHARS);
 }
 
 export function formatModelRef(model: GoalModelRef | undefined): string {

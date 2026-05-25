@@ -66,7 +66,7 @@ Inside Pi:
 
 `/goal <objective>` starts a run. The main session receives a normal visible prompt and works as usual. When the main agent stops, the extension first launches a separate summarizer session to summarize the visible session log, collects deterministic workspace evidence, then launches an independent observer session with a clean context. The observer is read-oriented by default and is instructed to run validation commands, inspect the workspace, and fail closed when evidence is missing.
 
-The Pi TUI footer and goal widget show the active objective, attempt count, current state, observer model, summarizer model, last verdict, blocking objection, short steering feedback, and next instruction.
+The Pi TUI footer and goal widget show the active objective, attempt count, current state, observer model, summarizer model, observer memory, last verdict, blocking objection, short steering feedback, and next instruction.
 
 ## Configuration
 
@@ -103,6 +103,12 @@ Example:
     "extraValidationCommands": [],
     "validationCommandLimit": 3,
     "validationTimeoutMs": 120000
+  },
+  "attemptGuard": {
+    "enabled": true,
+    "maxSingleDeltaChars": 64000,
+    "maxAssistantDeltaChars": 512000,
+    "maxWhitespaceDeltaChars": 32000
   }
 }
 ```
@@ -111,8 +117,10 @@ Example:
 
 Prompt templates support these placeholders:
 
-- observer: `{{goal}}`, `{{mainModel}}`, `{{observerModel}}`, `{{verifierModel}}`, `{{latestAssistantSummary}}`, `{{evidence}}`
+- observer: `{{goal}}`, `{{mainModel}}`, `{{observerModel}}`, `{{verifierModel}}`, `{{observerMemory}}`, `{{latestAssistantSummary}}`, `{{evidence}}`
 - summarizer: `{{goal}}`, `{{entryCount}}`, `{{serializedLog}}`
+
+Custom templates cannot opt out of structured output. The extension always appends a mandatory strict-JSON contract to internal observer and summarizer prompts.
 
 Environment variables override file settings:
 
@@ -133,6 +141,10 @@ PI_GOAL_VALIDATION_COMMANDS='swift test'
 PI_GOAL_EXTRA_VALIDATION_COMMANDS='swift test --filter LedgerLiteCoreTests'
 PI_GOAL_VALIDATION_COMMAND_LIMIT=3
 PI_GOAL_VALIDATION_TIMEOUT_MS=120000
+PI_GOAL_ATTEMPT_GUARD_ENABLED=true
+PI_GOAL_ATTEMPT_MAX_SINGLE_DELTA_CHARS=64000
+PI_GOAL_ATTEMPT_MAX_ASSISTANT_DELTA_CHARS=512000
+PI_GOAL_ATTEMPT_MAX_WHITESPACE_DELTA_CHARS=32000
 ```
 
 Legacy `PI_GOAL_VERIFIER_*` and `PI_GOAL_SUMMARY_*` names still work as aliases for observer and summarizer settings.
@@ -144,6 +156,7 @@ If no observer model is configured, the observer uses the current main-session m
 The observer receives:
 
 - the original objective
+- its durable observer memory from prior attempts in this `/goal` run
 - the main agent's final visible summary
 - a separate model-generated comprehensive summary of the full session log
 - pre-collected workspace evidence
@@ -156,6 +169,19 @@ The observer receives:
 - discovered validation commands such as `npm test`, `npm run check`, `swift test`, `cargo test`, `pytest`, or `go test ./...`
 - captured output from running configured or detected validation commands, within the configured timeout and command limit
 
+The summarizer must return strict JSON:
+
+```json
+{
+  "summary": "dense factual summary of the session log",
+  "files": ["files inspected, edited, or mentioned"],
+  "commands": ["commands run or attempted, including validation"],
+  "claims": ["completion or evidence claims made by the main agent"],
+  "openIssues": ["unresolved failures, missing evidence, suspicious behavior, or shortcuts"],
+  "toolErrors": ["tool calls or command attempts that failed"]
+}
+```
+
 The observer must return strict JSON:
 
 ```json
@@ -166,11 +192,22 @@ The observer must return strict JSON:
   "evidence": ["npm test exited 0"],
   "objections": [],
   "nextInstructions": "",
-  "steeringFeedback": ""
+  "steeringFeedback": "",
+  "observerMemory": "Attempt 1 failed validation; attempt 2 fixed the filter and npm test exited 0."
 }
 ```
 
 Malformed observer output is treated as `FAIL`. On `FAIL`, `steeringFeedback` is fed back into the visible main session as a short nudge, alongside the fuller observer objections and next instructions.
+
+`observerMemory` is the observer's bounded cross-attempt memory for the current goal. The extension persists it on the goal run, passes it into the next observer prompt, shows a short excerpt in the TUI widget, and includes it in verifier logs. It should preserve durable facts such as previous validation failures, files already changed, repeated tool-call problems, test weakening concerns, and the next verification focus.
+
+Malformed summarizer output does not by itself fail the goal. It is converted into structured evidence with an `openIssues` entry so the observer can treat the missing summary as a weak-evidence condition.
+
+## Attempt Guard
+
+Less capable models can fail before the observer gets a turn, for example by streaming a malformed edit tool call or pages of whitespace. While a `/goal` run is active, the attempt guard watches assistant stream deltas and aborts a pathological attempt when configured limits are exceeded. The run is not marked complete; it records a synthetic `FAIL` verdict, updates the TUI, and feeds a retry prompt back into the visible main session with instructions to use smaller concrete edits and validation.
+
+The guard is deliberately narrow. It does not judge code quality or goal completion; it only prevents one broken main-model attempt from monopolizing the loop before independent verification can run.
 
 ## Development
 

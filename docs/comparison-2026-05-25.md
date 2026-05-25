@@ -138,3 +138,16 @@ Implemented after this comparison: the verifier evidence bundle was strengthened
 - a short `steeringFeedback` field that is fed back into the visible main session on failed verification
 
 That would reduce verifier hallucinations such as claiming `README.md` was missing when it existed.
+
+Later `/goal` test runs exposed two additional weak-model failure modes:
+
+- a weak main model can stream a malformed tool call indefinitely before the observer receives an `agent_end`
+- even with good observer feedback, a weak main model can repeat stale failing edit calls across attempts
+
+The extension now addresses those as follows:
+
+- internal observer and summarizer calls must return strict structured JSON, including structured session-summary fields
+- the observer verdict includes `observerMemory`, a bounded cross-attempt memory that is persisted on the goal run and passed into later observer attempts
+- failed observer verdicts can include `steeringFeedback`, which is fed back into the visible main session as a short nudge
+- an attempt guard aborts pathological active attempts with oversized or whitespace-heavy assistant stream deltas before they monopolize the loop
+- the RPC comparison harness caps single event and total JSONL sizes so broken streams do not consume unbounded disk

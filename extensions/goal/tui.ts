@@ -1,6 +1,6 @@
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { GoalRun } from "./types.ts";
-import { formatModelRef, isTerminal } from "./state.ts";
+import { formatModelRef, isTerminal, truncate } from "./state.ts";
 
 const STATUS_KEY = "goal";
 const WIDGET_KEY = "goal";
@@ -37,6 +37,10 @@ export function formatWidget(run: GoalRun): string[] {
     `Verifier: ${formatModelRef(run.verifierModel)}`,
     `Summarizer: ${formatModelRef(run.summarizerModel)}`,
   ];
+
+  if (run.observerMemory?.trim()) {
+    lines.push(`Observer memory: ${truncate(run.observerMemory.trim(), 240).replace(/\s+/g, " ")}`);
+  }
 
   if (verdict) {
     lines.push(`Last verdict: ${verdict.verdict} (${verdict.confidence.toFixed(2)}) ${verdict.summary}`);

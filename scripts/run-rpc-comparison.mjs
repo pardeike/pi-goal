@@ -25,6 +25,8 @@ if (args.mode !== "direct" && args.mode !== "goal") {
 }
 
 const timeoutMs = Number(args.timeoutMs ?? 15 * 60 * 1000);
+const maxEventBytes = Number(args.maxEventBytes ?? 20 * 1024 * 1024);
+const maxJsonlBytes = Number(args.maxJsonlBytes ?? 100 * 1024 * 1024);
 const mainModel = args.mainModel ?? "ollama/qwen2.5:0.5b";
 const mainThinking = args.mainThinking ?? "off";
 const observerModel = args.observerModel ?? args.verifierModel ?? "ollama/qwen3.6:27b-coding-nvfp4";
@@ -82,6 +84,7 @@ let settled = false;
 let sawAgentStart = false;
 let agentEndCount = 0;
 let terminalGoalStatus;
+let jsonlBytes = 0;
 
 const timer = setTimeout(() => {
   void finish("timeout");
@@ -90,13 +93,18 @@ const timer = setTimeout(() => {
 proc.stdout.on("data", (chunk) => {
   if (settled) return;
   stdoutBuffer += chunk.toString();
+  if (stdoutBuffer.length > maxEventBytes && !stdoutBuffer.includes("\n")) {
+    transcriptLines.push(`\n[stdout_line_too_large] buffered=${stdoutBuffer.length} max=${maxEventBytes}\n`);
+    void finish(`stdout-line-too-large:${stdoutBuffer.length}`);
+    return;
+  }
   let newlineIndex;
   while ((newlineIndex = stdoutBuffer.indexOf("\n")) >= 0) {
     if (settled) return;
     const line = stdoutBuffer.slice(0, newlineIndex);
     stdoutBuffer = stdoutBuffer.slice(newlineIndex + 1);
     if (!line.trim()) continue;
-    jsonl.write(`${line}\n`);
+    if (!writeJsonlLine(line)) return;
     handleJsonLine(line);
   }
 });
@@ -183,6 +191,37 @@ function handleJsonLine(line) {
   }
 }
 
+function writeJsonlLine(line) {
+  const lineBytes = Buffer.byteLength(line) + 1;
+  if (lineBytes > maxEventBytes) {
+    const truncated = JSON.stringify({
+      type: "event_truncated",
+      originalBytes: lineBytes,
+      prefix: line.slice(0, 2048),
+    });
+    jsonl.write(`${truncated}\n`);
+    transcriptLines.push(`\n[event_truncated] originalBytes=${lineBytes} max=${maxEventBytes}\n`);
+    void finish(`event-too-large:${lineBytes}`);
+    return false;
+  }
+
+  if (jsonlBytes + lineBytes > maxJsonlBytes) {
+    const capped = JSON.stringify({
+      type: "jsonl_cap_reached",
+      maxJsonlBytes,
+      attemptedTotalBytes: jsonlBytes + lineBytes,
+    });
+    jsonl.write(`${capped}\n`);
+    transcriptLines.push(`\n[jsonl_cap_reached] bytes=${jsonlBytes + lineBytes} max=${maxJsonlBytes}\n`);
+    void finish(`jsonl-cap:${jsonlBytes + lineBytes}`);
+    return false;
+  }
+
+  jsonl.write(`${line}\n`);
+  jsonlBytes += lineBytes;
+  return true;
+}
+
 function send(command) {
   proc.stdin.write(`${JSON.stringify(command)}\n`);
 }
@@ -239,5 +278,7 @@ Optional:
   --summarizerModel openai/gpt-4.1-nano
   --summarizerThinking off
   --maxAttempts 5
+  --maxEventBytes 20971520
+  --maxJsonlBytes 104857600
   --timeoutMs 900000`);
 }

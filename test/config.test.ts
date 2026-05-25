@@ -45,6 +45,10 @@ describe("loadGoalConfig", () => {
           maxStalledAttempts: 4,
           minStalledRuntimeMs: 987654,
         },
+        httpIdleTimeout: {
+          enabled: false,
+          timeoutMs: 900000,
+        },
       }),
       "utf8",
     );
@@ -69,6 +73,8 @@ describe("loadGoalConfig", () => {
     expect(config.loopSafety.minAttemptsBeforeStallCheck).toBe(9);
     expect(config.loopSafety.maxStalledAttempts).toBe(4);
     expect(config.loopSafety.minStalledRuntimeMs).toBe(987654);
+    expect(config.httpIdleTimeout.enabled).toBe(false);
+    expect(config.httpIdleTimeout.timeoutMs).toBe(900000);
   });
 
   it("applies environment overrides and verifier/summary aliases", async () => {
@@ -100,6 +106,8 @@ describe("loadGoalConfig", () => {
       PI_GOAL_MIN_ATTEMPTS_BEFORE_STALL_CHECK: "12",
       PI_GOAL_MAX_STALLED_ATTEMPTS: "7",
       PI_GOAL_MIN_STALLED_RUNTIME_MS: "7200000",
+      PI_GOAL_HTTP_IDLE_TIMEOUT_ENABLED: "true",
+      PI_GOAL_HTTP_IDLE_TIMEOUT_MS: "0",
     });
 
     expect(config.observer.model).toBe("openai/gpt-4.1-mini");
@@ -115,6 +123,8 @@ describe("loadGoalConfig", () => {
     expect(config.loopSafety.minAttemptsBeforeStallCheck).toBe(12);
     expect(config.loopSafety.maxStalledAttempts).toBe(7);
     expect(config.loopSafety.minStalledRuntimeMs).toBe(7200000);
+    expect(config.httpIdleTimeout.enabled).toBe(true);
+    expect(config.httpIdleTimeout.timeoutMs).toBe(0);
   });
 
   it("loads global config before project config and lets project config override it", async () => {

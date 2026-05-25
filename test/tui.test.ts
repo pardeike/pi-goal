@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { createGoalRun, withVerdict } from "../extensions/goal/state.ts";
+import { createGoalRun, modelRefFromModel, withVerdict } from "../extensions/goal/state.ts";
 import { formatStatus, formatWidget } from "../extensions/goal/tui.ts";
 
 describe("TUI formatting", () => {
@@ -50,5 +50,26 @@ describe("TUI formatting", () => {
     expect(widget).toContain("Verifier activity: turns 1 | tools 0 | hidden thinking chars 42");
     expect(widget).toContain("Verifier text: Checking validation evidence");
     expect(widget).toContain("> tool: bash npm test -> running");
+  });
+
+  it("formats model refs with effective clamped thinking levels", () => {
+    const model = {
+      provider: "ollama",
+      id: "qwen3.6:27b",
+      name: "Qwen 3.7 27B (Ollama)",
+      reasoning: true,
+    } as any;
+    const run = createGoalRun({
+      objective: "audit reality",
+      mainModel: modelRefFromModel(model, "xhigh"),
+      verifierModel: modelRefFromModel(model, "xhigh"),
+      summarizerModel: modelRefFromModel(model, "xhigh"),
+    });
+
+    const widget = formatWidget(run);
+
+    expect(widget).toContain("Main: ollama/qwen3.6:27b:high");
+    expect(widget).toContain("Verifier: ollama/qwen3.6:27b:high");
+    expect(widget).toContain("Summarizer: ollama/qwen3.6:27b:high");
   });
 });

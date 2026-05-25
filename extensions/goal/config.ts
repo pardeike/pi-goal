@@ -1,7 +1,7 @@
 import { readFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, isAbsolute, join, resolve } from "node:path";
-import type { GoalAttemptGuardRuntimeConfig, GoalEvidenceRuntimeConfig, GoalLoopSafetyRuntimeConfig, GoalRoleRuntimeConfig, GoalRuntimeConfig, GoalThinkingLevel } from "./types.ts";
+import type { GoalAttemptGuardRuntimeConfig, GoalEvidenceRuntimeConfig, GoalHttpIdleTimeoutRuntimeConfig, GoalLoopSafetyRuntimeConfig, GoalRoleRuntimeConfig, GoalRuntimeConfig, GoalThinkingLevel } from "./types.ts";
 
 const THINKING_LEVELS = new Set<GoalThinkingLevel>(["off", "minimal", "low", "medium", "high", "xhigh"]);
 const DEFAULT_OBSERVER_TOOLS = ["read", "bash", "grep", "find", "ls"];
@@ -40,6 +40,11 @@ interface RawGoalLoopSafetyConfig {
   minStalledRuntimeMs?: unknown;
 }
 
+interface RawGoalHttpIdleTimeoutConfig {
+  enabled?: unknown;
+  timeoutMs?: unknown;
+}
+
 interface RawGoalConfig {
   maxAttempts?: unknown;
   observer?: RawGoalRoleConfig;
@@ -49,6 +54,7 @@ interface RawGoalConfig {
   evidence?: RawGoalEvidenceConfig;
   attemptGuard?: RawGoalAttemptGuardConfig;
   loopSafety?: RawGoalLoopSafetyConfig;
+  httpIdleTimeout?: RawGoalHttpIdleTimeoutConfig;
 }
 
 interface LoadedRawConfig {
@@ -83,6 +89,10 @@ export function defaultGoalConfig(): GoalRuntimeConfig {
       maxStalledAttempts: 12,
       minStalledRuntimeMs: 12 * 60 * 60 * 1000,
     },
+    httpIdleTimeout: {
+      enabled: true,
+      timeoutMs: 0,
+    },
   };
 }
 
@@ -113,6 +123,7 @@ async function mergeConfig(config: GoalRuntimeConfig, loaded: LoadedRawConfig, c
   mergeEvidence(config.evidence, loaded.config.evidence);
   mergeAttemptGuard(config.attemptGuard, loaded.config.attemptGuard);
   mergeLoopSafety(config.loopSafety, loaded.config.loopSafety);
+  mergeHttpIdleTimeout(config.httpIdleTimeout, loaded.config.httpIdleTimeout);
   config.maxAttempts = clampInt(numberFromUnknown(loaded.config.maxAttempts), config.maxAttempts, 1, 10_000);
 }
 
@@ -156,6 +167,10 @@ function applyEnvOverrides(config: GoalRuntimeConfig, env: NodeJS.ProcessEnv): v
   config.loopSafety.minAttemptsBeforeStallCheck = clampInt(parseEnvInt(env.PI_GOAL_MIN_ATTEMPTS_BEFORE_STALL_CHECK), config.loopSafety.minAttemptsBeforeStallCheck, 1, 1000);
   config.loopSafety.maxStalledAttempts = clampInt(parseEnvInt(env.PI_GOAL_MAX_STALLED_ATTEMPTS), config.loopSafety.maxStalledAttempts, 1, 1000);
   config.loopSafety.minStalledRuntimeMs = clampInt(parseEnvInt(env.PI_GOAL_MIN_STALLED_RUNTIME_MS), config.loopSafety.minStalledRuntimeMs, 0, 7 * 24 * 60 * 60 * 1000);
+
+  const httpIdleEnabled = parseEnvBool(env.PI_GOAL_HTTP_IDLE_TIMEOUT_ENABLED);
+  if (httpIdleEnabled !== undefined) config.httpIdleTimeout.enabled = httpIdleEnabled;
+  config.httpIdleTimeout.timeoutMs = clampInt(parseEnvInt(env.PI_GOAL_HTTP_IDLE_TIMEOUT_MS), config.httpIdleTimeout.timeoutMs, 0, 7 * 24 * 60 * 60 * 1000);
 }
 
 function applyRoleEnv(role: GoalRoleRuntimeConfig, env: NodeJS.ProcessEnv, keys: Record<"model" | "thinking" | "systemPrompt" | "promptTemplate" | "extraInstructions" | "tools", string[]>): void {
@@ -285,6 +300,13 @@ function mergeLoopSafety(target: GoalLoopSafetyRuntimeConfig, raw: RawGoalLoopSa
   target.minAttemptsBeforeStallCheck = clampInt(numberFromUnknown(raw.minAttemptsBeforeStallCheck), target.minAttemptsBeforeStallCheck, 1, 1000);
   target.maxStalledAttempts = clampInt(numberFromUnknown(raw.maxStalledAttempts), target.maxStalledAttempts, 1, 1000);
   target.minStalledRuntimeMs = clampInt(numberFromUnknown(raw.minStalledRuntimeMs), target.minStalledRuntimeMs, 0, 7 * 24 * 60 * 60 * 1000);
+}
+
+function mergeHttpIdleTimeout(target: GoalHttpIdleTimeoutRuntimeConfig, raw: RawGoalHttpIdleTimeoutConfig | undefined): void {
+  if (!raw) return;
+  const enabled = boolFromUnknown(raw.enabled);
+  if (enabled !== undefined) target.enabled = enabled;
+  target.timeoutMs = clampInt(numberFromUnknown(raw.timeoutMs), target.timeoutMs, 0, 7 * 24 * 60 * 60 * 1000);
 }
 
 function normalizeThinking(value: unknown): GoalThinkingLevel | undefined {

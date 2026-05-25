@@ -66,4 +66,17 @@ describe("verifier progress tracker", () => {
     expect(end.snapshot.textPreview).toContain("Checking evidence.");
     expect(end.snapshot.lines).toContain("tool: bash npm test -> ok");
   });
+
+  it("emits visible verifier text as progress messages", () => {
+    const tracker = createVerifierProgressTracker();
+
+    const first = tracker.handle({ type: "text_delta", delta: "Checking workspace evidence." });
+    const thinking = tracker.handle({ type: "thinking_delta", delta: "private reasoning" });
+    const done = tracker.handle({ type: "agent_end" });
+
+    expect(first.message?.content).toBe("Independent verifier: Verifier visible output");
+    expect(first.message?.details.lines).toContain("Checking workspace evidence.");
+    expect(thinking.snapshot.action).toContain("Last visible output: Checking workspace evidence.");
+    expect(done.snapshot.action).toContain("Verifier output complete; parsing verdict:");
+  });
 });

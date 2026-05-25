@@ -1,10 +1,11 @@
-import type { Model } from "@earendil-works/pi-ai";
+import { clampThinkingLevel, type Model, type ModelThinkingLevel } from "@earendil-works/pi-ai";
 import type { SessionEntry } from "@earendil-works/pi-coding-agent";
-import { GOAL_STATE_CUSTOM_TYPE, type GoalCommand, type GoalModelRef, type GoalRun, type GoalStateEntry, type ParsedCommand, type VerifierVerdict } from "./types.ts";
+import { GOAL_STATE_CUSTOM_TYPE, type GoalCommand, type GoalModelRef, type GoalRun, type GoalStateEntry, type GoalThinkingLevel, type ParsedCommand, type VerifierVerdict } from "./types.ts";
 
 const SUBCOMMANDS = new Set(["status", "cancel", "help"]);
 const MAX_SUMMARY_CHARS = 6_000;
 const MAX_OBSERVER_MEMORY_CHARS = 4_000;
+const MODEL_THINKING_LEVELS = new Set<ModelThinkingLevel>(["off", "minimal", "low", "medium", "high", "xhigh"]);
 
 export function parseGoalCommand(args: string): ParsedCommand {
   const trimmed = args.trim();
@@ -94,8 +95,14 @@ export function modelRefFromModel(model: Model<any> | undefined, thinkingLevel?:
     provider: model.provider,
     id: model.id,
     name: model.name,
-    thinkingLevel,
+    thinkingLevel: effectiveThinkingLevelForModel(model, thinkingLevel),
   };
+}
+
+export function effectiveThinkingLevelForModel(model: Model<any> | undefined, thinkingLevel?: string): GoalThinkingLevel | undefined {
+  if (!thinkingLevel) return undefined;
+  if (!model || !MODEL_THINKING_LEVELS.has(thinkingLevel as ModelThinkingLevel)) return thinkingLevel as GoalThinkingLevel;
+  return clampThinkingLevel(model, thinkingLevel as ModelThinkingLevel) as GoalThinkingLevel;
 }
 
 export function isGoalStateEntry(value: unknown): value is GoalStateEntry {

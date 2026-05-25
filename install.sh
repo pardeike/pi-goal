@@ -191,6 +191,11 @@ create_global_config_template() {
     "minAttemptsBeforeStallCheck": 20,
     "maxStalledAttempts": 12,
     "minStalledRuntimeMs": 43200000
+  },
+  "httpIdleTimeout": {
+    "_comment": "Temporarily override Pi's HTTP idle timeout while /goal is active. timeoutMs 0 disables the idle timeout; the previous Pi setting is restored when the goal passes, fails, or is cancelled.",
+    "enabled": true,
+    "timeoutMs": 0
   }
 }
 JSON

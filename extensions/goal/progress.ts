@@ -7,6 +7,7 @@ export const GOAL_VERIFIER_MESSAGE_CUSTOM_TYPE = "pi-goal-verifier";
 
 const PROGRESS_LINE_LIMIT = 8;
 const PROGRESS_TEXT_LIMIT = 500;
+const TEXT_MESSAGE_CHAR_STEP = 180;
 const MESSAGE_LINE_LIMIT = 6;
 const MESSAGE_LINE_CHARS = 220;
 
@@ -103,6 +104,8 @@ export function createVerifierProgressTracker(): {
 } {
   let snapshot = createGoalProgressSnapshot("verifying", "Verifying goal independently...");
   let textPreview = "";
+  let textChars = 0;
+  let lastTextMessageChars = 0;
   let turnCount = 0;
   let toolCount = 0;
   let thinkingChars = 0;
@@ -129,12 +132,27 @@ export function createVerifierProgressTracker(): {
           return { snapshot: update(`Verifier turn ${turnCount} started.`, `turn ${turnCount}: started`) };
         }
         case "text_delta": {
+          textChars += event.delta.length;
           textPreview = tailText(`${textPreview}${event.delta}`, PROGRESS_TEXT_LIMIT);
-          return { snapshot: update("Verifier is writing its judgement...") };
+          const snapshot = update(outputAction(textPreview));
+          if (!shouldEmitTextMessage(textChars, lastTextMessageChars, event.delta)) {
+            return { snapshot };
+          }
+          lastTextMessageChars = textChars;
+          return {
+            snapshot,
+            message: createVerifierFlowMessage({
+              phase: "verifying",
+              status: "running",
+              title: "Verifier visible output",
+              lines: previewLines(textPreview),
+            }),
+          };
         }
         case "thinking_delta": {
           thinkingChars += event.delta.length;
-          return { snapshot: update(`Verifier is thinking (${thinkingChars} chars hidden).`) };
+          const suffix = textPreview.trim() ? ` Last visible output: ${sanitizeLine(textPreview, MESSAGE_LINE_CHARS - 40)}` : " No visible output yet.";
+          return { snapshot: update(`Verifier is thinking (${thinkingChars} chars hidden).${suffix}`) };
         }
         case "tool_start": {
           const description = describeTool(event.toolName, event.args);
@@ -168,7 +186,20 @@ export function createVerifierProgressTracker(): {
           };
         }
         case "agent_end": {
-          return { snapshot: update("Verifier response complete; parsing verdict.", "verifier response complete") };
+          const snapshot = update(textPreview.trim() ? outputAction(textPreview, true) : "Verifier response complete; parsing verdict.", "verifier response complete");
+          if (!textPreview.trim() || lastTextMessageChars === textChars) {
+            return { snapshot };
+          }
+          lastTextMessageChars = textChars;
+          return {
+            snapshot,
+            message: createVerifierFlowMessage({
+              phase: "parsing",
+              status: "running",
+              title: "Verifier output complete",
+              lines: previewLines(textPreview),
+            }),
+          };
         }
       }
     },
@@ -199,6 +230,24 @@ function describeTool(toolName: string, args: unknown): string {
 
 function compactLines(lines: string[]): string[] {
   return lines.map((line) => sanitizeLine(line, MESSAGE_LINE_CHARS)).filter(Boolean).slice(-PROGRESS_LINE_LIMIT);
+}
+
+function outputAction(text: string, complete = false): string {
+  const prefix = complete ? "Verifier output complete; parsing verdict: " : "Verifier output: ";
+  return `${prefix}${sanitizeLine(text, MESSAGE_LINE_CHARS - prefix.length)}`;
+}
+
+function shouldEmitTextMessage(textChars: number, lastTextMessageChars: number, delta: string): boolean {
+  if (lastTextMessageChars === 0) return true;
+  return textChars - lastTextMessageChars >= TEXT_MESSAGE_CHAR_STEP || /[\n}\]]/.test(delta);
+}
+
+function previewLines(text: string): string[] {
+  const normalized = text.trim();
+  if (!normalized) return [];
+  const lines = normalized.split(/\r?\n/).map((line) => sanitizeLine(line, MESSAGE_LINE_CHARS)).filter(Boolean);
+  if (lines.length > 1) return lines.slice(-MESSAGE_LINE_LIMIT);
+  return [sanitizeLine(normalized, MESSAGE_LINE_CHARS)];
 }
 
 function sanitizeLine(line: string, maxChars: number): string {

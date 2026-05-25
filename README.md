@@ -172,6 +172,10 @@ Example:
     "minAttemptsBeforeStallCheck": 20,
     "maxStalledAttempts": 12,
     "minStalledRuntimeMs": 43200000
+  },
+  "httpIdleTimeout": {
+    "enabled": true,
+    "timeoutMs": 0
   }
 }
 ```
@@ -213,11 +217,15 @@ PI_GOAL_MAX_RUNTIME_MS=0
 PI_GOAL_MIN_ATTEMPTS_BEFORE_STALL_CHECK=20
 PI_GOAL_MAX_STALLED_ATTEMPTS=12
 PI_GOAL_MIN_STALLED_RUNTIME_MS=43200000
+PI_GOAL_HTTP_IDLE_TIMEOUT_ENABLED=true
+PI_GOAL_HTTP_IDLE_TIMEOUT_MS=0
 ```
 
 Legacy `PI_GOAL_VERIFIER_*` and `PI_GOAL_SUMMARY_*` names still work as aliases for observer and summarizer settings.
 
 If no observer model is configured, the observer uses the current main-session model in a clean independent context. If no summarizer model is configured, the summarizer uses the observer model. Validation command capture is bounded by `validationCommandLimit` and `validationTimeoutMs`.
+
+While `/goal` is active, `httpIdleTimeout` temporarily overrides Pi's HTTP idle timeout. The default `timeoutMs: 0` disables the idle timeout for goal runs, and `/goal` restores the prior Pi setting when the run passes, fails, is cancelled, or the session shuts down.
 
 ## Observer Model
 
@@ -287,6 +295,8 @@ The guard is deliberately narrow. It does not judge code quality or goal complet
 - `minAttemptsBeforeStallCheck` prevents early give-up. Stalled-loop detection is ignored until this attempt number is reached.
 - `maxStalledAttempts` stops only after this many repeated verifier cycles with unchanged workspace and validation evidence.
 - `minStalledRuntimeMs` is the minimum wall-clock time without progress before stalled-loop detection can stop the run. It defaults to `43200000` milliseconds, or 12 hours.
+
+`httpIdleTimeout` temporarily overrides Pi's HTTP idle timeout while a `/goal` run is active. The default `timeoutMs` is `0`, which disables the idle timeout so slow local thinking models do not get terminated after Pi's normal 5-minute idle window. The previous Pi setting is restored when the goal passes, fails, is cancelled, or the session shuts down. Set `PI_GOAL_HTTP_IDLE_TIMEOUT_MS` or `PI_GOAL_HTTP_IDLE_TIMEOUT_ENABLED=false` to override this behavior.
 
 Progress is detected deterministically from evidence collected before observer judgement: `git status`, `git diff --stat`, changed file names, validation commands, validation exit codes, and normalized validation output. A new failure mode or changed validation result resets the stalled count. Reworded observer text alone does not count as progress.
 

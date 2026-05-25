@@ -45,6 +45,11 @@ export interface GoalLoopSafetyRuntimeConfig {
   minStalledRuntimeMs: number;
 }
 
+export interface GoalHttpIdleTimeoutRuntimeConfig {
+  enabled: boolean;
+  timeoutMs: number;
+}
+
 export interface GoalRuntimeConfig {
   source?: string;
   globalSource?: string;
@@ -54,6 +59,7 @@ export interface GoalRuntimeConfig {
   evidence: GoalEvidenceRuntimeConfig;
   attemptGuard: GoalAttemptGuardRuntimeConfig;
   loopSafety: GoalLoopSafetyRuntimeConfig;
+  httpIdleTimeout: GoalHttpIdleTimeoutRuntimeConfig;
 }
 
 export interface GoalRun {

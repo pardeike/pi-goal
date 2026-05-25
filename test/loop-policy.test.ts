@@ -1,8 +1,9 @@
 import { describe, expect, it } from "vitest";
 import { createAttemptGuardMetrics, recordAttemptGuardUpdate } from "../extensions/goal/attempt-guard.ts";
+import { applyLoopSafety, buildProgressSignature } from "../extensions/goal/loop-safety.ts";
 import { buildInitialGoalPrompt, buildRetryPrompt, buildSessionSummaryPrompt, buildVerifierPrompt } from "../extensions/goal/prompts.ts";
 import { createGoalRun } from "../extensions/goal/state.ts";
-import type { EvidenceBundle, GoalAttemptGuardRuntimeConfig, VerifierVerdict } from "../extensions/goal/types.ts";
+import type { EvidenceBundle, GoalAttemptGuardRuntimeConfig, GoalLoopSafetyRuntimeConfig, VerifierVerdict } from "../extensions/goal/types.ts";
 
 describe("goal prompts", () => {
   it("keeps main work visible and evidence-driven", () => {
@@ -122,7 +123,151 @@ describe("goal prompts", () => {
     expect(trip?.reason).toContain("oversized toolcall_delta delta");
     expect(trip?.metrics.whitespaceDeltaChars).toBe(32);
   });
+
+  it("does not stop stalled loops before the configured minimum attempts", () => {
+    const verdict = failVerdict();
+    const evidence = fakeEvidence();
+    const signature = buildProgressSignature(verdict, evidence);
+    const run = {
+      ...createGoalRun({ objective: "fix validation", maxAttempts: 100 }),
+      attempt: 4,
+      progressSignature: signature,
+      stalledAttempts: 5,
+    };
+
+    const result = applyLoopSafety({
+      run,
+      verdict,
+      evidence,
+      config: loopSafetyConfig(),
+      now: run.startedAt + 10_000,
+    });
+
+    expect(result.shouldStop).toBe(false);
+    expect(result.run.stalledAttempts).toBe(6);
+  });
+
+  it("stops after repeated unchanged validation evidence once minimum attempts are reached", () => {
+    const verdict = failVerdict();
+    const evidence = fakeEvidence();
+    const signature = buildProgressSignature(verdict, evidence);
+    const run = {
+      ...createGoalRun({ objective: "fix validation", maxAttempts: 100 }),
+      attempt: 8,
+      progressSignature: signature,
+      stalledAttempts: 5,
+    };
+
+    const result = applyLoopSafety({
+      run,
+      verdict,
+      evidence,
+      config: loopSafetyConfig(),
+      now: run.startedAt + 2 * 60 * 60 * 1000,
+    });
+
+    expect(result.shouldStop).toBe(true);
+    expect(result.stopReason).toContain("without changed workspace or validation evidence");
+    expect(result.run.stopReason).toBe(result.stopReason);
+  });
+
+  it("resets stalled loop count when validation evidence changes", () => {
+    const verdict = failVerdict();
+    const run = {
+      ...createGoalRun({ objective: "fix validation", maxAttempts: 100 }),
+      attempt: 8,
+      progressSignature: buildProgressSignature(verdict, fakeEvidence()),
+      stalledAttempts: 5,
+    };
+    const changedEvidence = {
+      ...fakeEvidence(),
+      validationResults: [
+        {
+          command: "npm test",
+          exitCode: 1,
+          stdout: "different failure",
+          stderr: "",
+        },
+      ],
+    };
+
+    const result = applyLoopSafety({
+      run,
+      verdict,
+      evidence: changedEvidence,
+      config: loopSafetyConfig(),
+      now: run.startedAt + 10_000,
+    });
+
+    expect(result.shouldStop).toBe(false);
+    expect(result.madeProgress).toBe(true);
+    expect(result.run.stalledAttempts).toBe(0);
+  });
+
+  it("stops when the configured wall-clock runtime is exceeded", () => {
+    const verdict = failVerdict();
+    const evidence = fakeEvidence();
+    const run = createGoalRun({ objective: "fix validation", maxAttempts: 100 });
+
+    const result = applyLoopSafety({
+      run,
+      verdict,
+      evidence,
+      config: { ...loopSafetyConfig(), maxRuntimeMs: 1_000 },
+      now: run.startedAt + 1_001,
+    });
+
+    expect(result.shouldStop).toBe(true);
+    expect(result.stopReason).toContain("runtime");
+  });
+
+  it("keeps retrying stalled loops until the minimum stalled runtime is reached", () => {
+    const verdict = failVerdict();
+    const evidence = fakeEvidence();
+    const signature = buildProgressSignature(verdict, evidence);
+    const run = {
+      ...createGoalRun({ objective: "fix validation", maxAttempts: 100 }),
+      attempt: 20,
+      progressSignature: signature,
+      stalledAttempts: 99,
+      lastProgressAt: 1_000,
+    };
+
+    const result = applyLoopSafety({
+      run,
+      verdict,
+      evidence,
+      config: { ...loopSafetyConfig(), minStalledRuntimeMs: 12 * 60 * 60 * 1000 },
+      now: 1_000 + 60 * 60 * 1000,
+    });
+
+    expect(result.shouldStop).toBe(false);
+    expect(result.run.stalledAttempts).toBe(100);
+  });
 });
+
+function failVerdict(): VerifierVerdict {
+  return {
+    verdict: "FAIL",
+    confidence: 0.9,
+    summary: "Validation failed.",
+    evidence: ["npm test exit 1"],
+    objections: ["Tests failed."],
+    nextInstructions: "Fix failing tests.",
+    steeringFeedback: "Fix failing tests.",
+    observerMemory: "Tests still fail.",
+  };
+}
+
+function loopSafetyConfig(): GoalLoopSafetyRuntimeConfig {
+  return {
+    enabled: true,
+    maxRuntimeMs: 0,
+    minAttemptsBeforeStallCheck: 8,
+    maxStalledAttempts: 6,
+    minStalledRuntimeMs: 0,
+  };
+}
 
 function fakeEvidence(): EvidenceBundle {
   return {

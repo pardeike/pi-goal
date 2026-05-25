@@ -37,6 +37,14 @@ export interface GoalAttemptGuardRuntimeConfig {
   maxWhitespaceDeltaChars: number;
 }
 
+export interface GoalLoopSafetyRuntimeConfig {
+  enabled: boolean;
+  maxRuntimeMs: number;
+  minAttemptsBeforeStallCheck: number;
+  maxStalledAttempts: number;
+  minStalledRuntimeMs: number;
+}
+
 export interface GoalRuntimeConfig {
   source?: string;
   maxAttempts: number;
@@ -44,6 +52,7 @@ export interface GoalRuntimeConfig {
   summarizer: GoalRoleRuntimeConfig;
   evidence: GoalEvidenceRuntimeConfig;
   attemptGuard: GoalAttemptGuardRuntimeConfig;
+  loopSafety: GoalLoopSafetyRuntimeConfig;
 }
 
 export interface GoalRun {
@@ -58,6 +67,10 @@ export interface GoalRun {
   verifierModel?: GoalModelRef;
   summarizerModel?: GoalModelRef;
   observerMemory?: string;
+  progressSignature?: string;
+  stalledAttempts?: number;
+  lastProgressAt?: number;
+  stopReason?: string;
   lastVerdict?: VerifierVerdict;
   lastMainLeafId?: string | null;
   verifierLogDir?: string;

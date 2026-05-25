@@ -41,6 +41,12 @@ export function formatWidget(run: GoalRun): string[] {
   if (run.observerMemory?.trim()) {
     lines.push(`Observer memory: ${truncate(run.observerMemory.trim(), 240).replace(/\s+/g, " ")}`);
   }
+  if ((run.stalledAttempts ?? 0) > 0) {
+    lines.push(`No-progress cycles: ${run.stalledAttempts}`);
+  }
+  if (run.stopReason?.trim()) {
+    lines.push(`Stop reason: ${truncate(run.stopReason.trim(), 240).replace(/\s+/g, " ")}`);
+  }
 
   if (verdict) {
     lines.push(`Last verdict: ${verdict.verdict} (${verdict.confidence.toFixed(2)}) ${verdict.summary}`);

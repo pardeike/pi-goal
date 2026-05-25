@@ -36,7 +36,7 @@ export function createGoalRun(params: {
     objective: params.objective,
     status: "running",
     attempt: 1,
-    maxAttempts: params.maxAttempts ?? 5,
+    maxAttempts: params.maxAttempts ?? 10_000,
     startedAt: now,
     updatedAt: now,
     mainModel: params.mainModel,

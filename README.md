@@ -13,6 +13,21 @@ npm install
 npm run check
 ```
 
+Install this checkout into a target repo's local Pi configuration:
+
+```bash
+cd /path/to/target/repo
+/path/to/pi-goal/install.sh
+```
+
+or from this repo:
+
+```bash
+./install.sh --target /path/to/target/repo
+```
+
+The installer runs `npm install`, `npm run check`, smoke-loads the extension, and then runs `pi install <this repo> -l` in the target directory. Use `--skip-check` or `--skip-smoke` when you need a faster local reinstall.
+
 Run Pi with the extension for a one-off test:
 
 ```bash
@@ -66,7 +81,7 @@ Inside Pi:
 
 `/goal <objective>` starts a run. The main session receives a normal visible prompt and works as usual. When the main agent stops, the extension first launches a separate summarizer session to summarize the visible session log, collects deterministic workspace evidence, then launches an independent observer session with a clean context. The observer is read-oriented by default and is instructed to run validation commands, inspect the workspace, and fail closed when evidence is missing.
 
-The Pi TUI footer and goal widget show the active objective, attempt count, current state, observer model, summarizer model, observer memory, last verdict, blocking objection, short steering feedback, and next instruction.
+The Pi TUI footer and goal widget show the active objective, attempt count, current state, observer model, summarizer model, observer memory, no-progress count, stop reason, last verdict, blocking objection, short steering feedback, and next instruction.
 
 ## Configuration
 
@@ -82,7 +97,7 @@ Example:
 
 ```json
 {
-  "maxAttempts": 5,
+  "maxAttempts": 10000,
   "observer": {
     "model": "openai/gpt-4.1-mini",
     "thinking": "low",
@@ -109,6 +124,13 @@ Example:
     "maxSingleDeltaChars": 64000,
     "maxAssistantDeltaChars": 512000,
     "maxWhitespaceDeltaChars": 32000
+  },
+  "loopSafety": {
+    "enabled": true,
+    "maxRuntimeMs": 0,
+    "minAttemptsBeforeStallCheck": 20,
+    "maxStalledAttempts": 12,
+    "minStalledRuntimeMs": 43200000
   }
 }
 ```
@@ -125,7 +147,7 @@ Custom templates cannot opt out of structured output. The extension always appen
 Environment variables override file settings:
 
 ```bash
-PI_GOAL_MAX_ATTEMPTS=5
+PI_GOAL_MAX_ATTEMPTS=10000
 PI_GOAL_OBSERVER_MODEL=openai/gpt-4.1-mini
 PI_GOAL_OBSERVER_THINKING=low
 PI_GOAL_OBSERVER_SYSTEM_PROMPT='...'
@@ -145,6 +167,11 @@ PI_GOAL_ATTEMPT_GUARD_ENABLED=true
 PI_GOAL_ATTEMPT_MAX_SINGLE_DELTA_CHARS=64000
 PI_GOAL_ATTEMPT_MAX_ASSISTANT_DELTA_CHARS=512000
 PI_GOAL_ATTEMPT_MAX_WHITESPACE_DELTA_CHARS=32000
+PI_GOAL_LOOP_SAFETY_ENABLED=true
+PI_GOAL_MAX_RUNTIME_MS=0
+PI_GOAL_MIN_ATTEMPTS_BEFORE_STALL_CHECK=20
+PI_GOAL_MAX_STALLED_ATTEMPTS=12
+PI_GOAL_MIN_STALLED_RUNTIME_MS=43200000
 ```
 
 Legacy `PI_GOAL_VERIFIER_*` and `PI_GOAL_SUMMARY_*` names still work as aliases for observer and summarizer settings.
@@ -209,6 +236,19 @@ Less capable models can fail before the observer gets a turn, for example by str
 
 The guard is deliberately narrow. It does not judge code quality or goal completion; it only prevents one broken main-model attempt from monopolizing the loop before independent verification can run.
 
+## Loop Safety
+
+`maxAttempts` is the final hard budget. Values up to `10000` are accepted, and the default is `10000` because `/goal` is meant to keep weaker local/internal models working until success when they are still making observable progress.
+
+`loopSafety` is the earlier bail-out layer for runs that are no longer making observable progress:
+
+- `maxRuntimeMs` stops a goal after a wall-clock budget. It defaults to `0`, which disables the wall-clock stop.
+- `minAttemptsBeforeStallCheck` prevents early give-up. Stalled-loop detection is ignored until this attempt number is reached.
+- `maxStalledAttempts` stops only after this many repeated verifier cycles with unchanged workspace and validation evidence.
+- `minStalledRuntimeMs` is the minimum wall-clock time without progress before stalled-loop detection can stop the run. It defaults to `43200000` milliseconds, or 12 hours.
+
+Progress is detected deterministically from evidence collected before observer judgement: `git status`, `git diff --stat`, changed file names, validation commands, validation exit codes, and normalized validation output. A new failure mode or changed validation result resets the stalled count. Reworded observer text alone does not count as progress.
+
 ## Development
 
 ```bash
@@ -241,4 +281,4 @@ Verifier logs are written under the target repo:
 
 - The observer is independent by context. It is independent by model only when observer configuration selects a different model.
 - The evidence collector runs configured or detected validation commands before observation. The observer can also run read-only inspection and validation commands through Pi's tools. Command choice still matters.
-- The loop stops at `PI_GOAL_MAX_ATTEMPTS` to avoid runaway work.
+- The loop stops at `PI_GOAL_MAX_ATTEMPTS`, `PI_GOAL_MAX_RUNTIME_MS`, or repeated unchanged evidence after `PI_GOAL_MIN_ATTEMPTS_BEFORE_STALL_CHECK`, `PI_GOAL_MAX_STALLED_ATTEMPTS`, and `PI_GOAL_MIN_STALLED_RUNTIME_MS`.

@@ -38,6 +38,13 @@ describe("loadGoalConfig", () => {
           maxAssistantDeltaChars: 23456,
           maxWhitespaceDeltaChars: 34567,
         },
+        loopSafety: {
+          enabled: true,
+          maxRuntimeMs: 123456,
+          minAttemptsBeforeStallCheck: 9,
+          maxStalledAttempts: 4,
+          minStalledRuntimeMs: 987654,
+        },
       }),
       "utf8",
     );
@@ -57,6 +64,11 @@ describe("loadGoalConfig", () => {
     expect(config.attemptGuard.maxSingleDeltaChars).toBe(12345);
     expect(config.attemptGuard.maxAssistantDeltaChars).toBe(23456);
     expect(config.attemptGuard.maxWhitespaceDeltaChars).toBe(34567);
+    expect(config.loopSafety.enabled).toBe(true);
+    expect(config.loopSafety.maxRuntimeMs).toBe(123456);
+    expect(config.loopSafety.minAttemptsBeforeStallCheck).toBe(9);
+    expect(config.loopSafety.maxStalledAttempts).toBe(4);
+    expect(config.loopSafety.minStalledRuntimeMs).toBe(987654);
   });
 
   it("applies environment overrides and verifier/summary aliases", async () => {
@@ -82,6 +94,11 @@ describe("loadGoalConfig", () => {
       PI_GOAL_VALIDATION_COMMAND_LIMIT: "1",
       PI_GOAL_ATTEMPT_GUARD_ENABLED: "true",
       PI_GOAL_ATTEMPT_MAX_SINGLE_DELTA_CHARS: "50000",
+      PI_GOAL_LOOP_SAFETY_ENABLED: "false",
+      PI_GOAL_MAX_RUNTIME_MS: "3600000",
+      PI_GOAL_MIN_ATTEMPTS_BEFORE_STALL_CHECK: "12",
+      PI_GOAL_MAX_STALLED_ATTEMPTS: "7",
+      PI_GOAL_MIN_STALLED_RUNTIME_MS: "7200000",
     });
 
     expect(config.observer.model).toBe("openai/gpt-4.1-mini");
@@ -92,5 +109,10 @@ describe("loadGoalConfig", () => {
     expect(config.evidence.validationCommandLimit).toBe(1);
     expect(config.attemptGuard.enabled).toBe(true);
     expect(config.attemptGuard.maxSingleDeltaChars).toBe(50000);
+    expect(config.loopSafety.enabled).toBe(false);
+    expect(config.loopSafety.maxRuntimeMs).toBe(3600000);
+    expect(config.loopSafety.minAttemptsBeforeStallCheck).toBe(12);
+    expect(config.loopSafety.maxStalledAttempts).toBe(7);
+    expect(config.loopSafety.minStalledRuntimeMs).toBe(7200000);
   });
 });

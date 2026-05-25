@@ -1,6 +1,6 @@
 import { readFile } from "node:fs/promises";
 import { dirname, isAbsolute, join, resolve } from "node:path";
-import type { GoalAttemptGuardRuntimeConfig, GoalEvidenceRuntimeConfig, GoalRoleRuntimeConfig, GoalRuntimeConfig, GoalThinkingLevel } from "./types.ts";
+import type { GoalAttemptGuardRuntimeConfig, GoalEvidenceRuntimeConfig, GoalLoopSafetyRuntimeConfig, GoalRoleRuntimeConfig, GoalRuntimeConfig, GoalThinkingLevel } from "./types.ts";
 
 const THINKING_LEVELS = new Set<GoalThinkingLevel>(["off", "minimal", "low", "medium", "high", "xhigh"]);
 const DEFAULT_OBSERVER_TOOLS = ["read", "bash", "grep", "find", "ls"];
@@ -31,6 +31,14 @@ interface RawGoalAttemptGuardConfig {
   maxWhitespaceDeltaChars?: unknown;
 }
 
+interface RawGoalLoopSafetyConfig {
+  enabled?: unknown;
+  maxRuntimeMs?: unknown;
+  minAttemptsBeforeStallCheck?: unknown;
+  maxStalledAttempts?: unknown;
+  minStalledRuntimeMs?: unknown;
+}
+
 interface RawGoalConfig {
   maxAttempts?: unknown;
   observer?: RawGoalRoleConfig;
@@ -39,6 +47,7 @@ interface RawGoalConfig {
   summary?: RawGoalRoleConfig;
   evidence?: RawGoalEvidenceConfig;
   attemptGuard?: RawGoalAttemptGuardConfig;
+  loopSafety?: RawGoalLoopSafetyConfig;
 }
 
 interface LoadedRawConfig {
@@ -48,7 +57,7 @@ interface LoadedRawConfig {
 
 export function defaultGoalConfig(): GoalRuntimeConfig {
   return {
-    maxAttempts: 5,
+    maxAttempts: 10_000,
     observer: {
       tools: [...DEFAULT_OBSERVER_TOOLS],
     },
@@ -66,6 +75,13 @@ export function defaultGoalConfig(): GoalRuntimeConfig {
       maxAssistantDeltaChars: 512_000,
       maxWhitespaceDeltaChars: 32_000,
     },
+    loopSafety: {
+      enabled: true,
+      maxRuntimeMs: 0,
+      minAttemptsBeforeStallCheck: 20,
+      maxStalledAttempts: 12,
+      minStalledRuntimeMs: 12 * 60 * 60 * 1000,
+    },
   };
 }
 
@@ -80,14 +96,15 @@ export async function loadGoalConfig(cwd: string, env: NodeJS.ProcessEnv = proce
   mergeRole(config.summarizer, await resolvePromptFiles(summarizerRaw, cwd, loaded.path));
   mergeEvidence(config.evidence, loaded.config.evidence);
   mergeAttemptGuard(config.attemptGuard, loaded.config.attemptGuard);
-  config.maxAttempts = clampInt(numberFromUnknown(loaded.config.maxAttempts), config.maxAttempts, 1, 20);
+  mergeLoopSafety(config.loopSafety, loaded.config.loopSafety);
+  config.maxAttempts = clampInt(numberFromUnknown(loaded.config.maxAttempts), config.maxAttempts, 1, 10_000);
 
   applyEnvOverrides(config, env);
   return config;
 }
 
 function applyEnvOverrides(config: GoalRuntimeConfig, env: NodeJS.ProcessEnv): void {
-  config.maxAttempts = clampInt(parseEnvInt(env.PI_GOAL_MAX_ATTEMPTS), config.maxAttempts, 1, 20);
+  config.maxAttempts = clampInt(parseEnvInt(env.PI_GOAL_MAX_ATTEMPTS), config.maxAttempts, 1, 10_000);
 
   applyRoleEnv(config.observer, env, {
     model: ["PI_GOAL_OBSERVER_MODEL", "PI_GOAL_VERIFIER_MODEL"],
@@ -119,6 +136,13 @@ function applyEnvOverrides(config: GoalRuntimeConfig, env: NodeJS.ProcessEnv): v
   config.attemptGuard.maxSingleDeltaChars = clampInt(parseEnvInt(env.PI_GOAL_ATTEMPT_MAX_SINGLE_DELTA_CHARS), config.attemptGuard.maxSingleDeltaChars, 4_096, 2_000_000);
   config.attemptGuard.maxAssistantDeltaChars = clampInt(parseEnvInt(env.PI_GOAL_ATTEMPT_MAX_ASSISTANT_DELTA_CHARS), config.attemptGuard.maxAssistantDeltaChars, 16_384, 10_000_000);
   config.attemptGuard.maxWhitespaceDeltaChars = clampInt(parseEnvInt(env.PI_GOAL_ATTEMPT_MAX_WHITESPACE_DELTA_CHARS), config.attemptGuard.maxWhitespaceDeltaChars, 4_096, 2_000_000);
+
+  const loopSafetyEnabled = parseEnvBool(env.PI_GOAL_LOOP_SAFETY_ENABLED);
+  if (loopSafetyEnabled !== undefined) config.loopSafety.enabled = loopSafetyEnabled;
+  config.loopSafety.maxRuntimeMs = clampInt(parseEnvInt(env.PI_GOAL_MAX_RUNTIME_MS), config.loopSafety.maxRuntimeMs, 0, 7 * 24 * 60 * 60 * 1000);
+  config.loopSafety.minAttemptsBeforeStallCheck = clampInt(parseEnvInt(env.PI_GOAL_MIN_ATTEMPTS_BEFORE_STALL_CHECK), config.loopSafety.minAttemptsBeforeStallCheck, 1, 1000);
+  config.loopSafety.maxStalledAttempts = clampInt(parseEnvInt(env.PI_GOAL_MAX_STALLED_ATTEMPTS), config.loopSafety.maxStalledAttempts, 1, 1000);
+  config.loopSafety.minStalledRuntimeMs = clampInt(parseEnvInt(env.PI_GOAL_MIN_STALLED_RUNTIME_MS), config.loopSafety.minStalledRuntimeMs, 0, 7 * 24 * 60 * 60 * 1000);
 }
 
 function applyRoleEnv(role: GoalRoleRuntimeConfig, env: NodeJS.ProcessEnv, keys: Record<"model" | "thinking" | "systemPrompt" | "promptTemplate" | "extraInstructions" | "tools", string[]>): void {
@@ -222,6 +246,16 @@ function mergeAttemptGuard(target: GoalAttemptGuardRuntimeConfig, raw: RawGoalAt
   target.maxSingleDeltaChars = clampInt(numberFromUnknown(raw.maxSingleDeltaChars), target.maxSingleDeltaChars, 4_096, 2_000_000);
   target.maxAssistantDeltaChars = clampInt(numberFromUnknown(raw.maxAssistantDeltaChars), target.maxAssistantDeltaChars, 16_384, 10_000_000);
   target.maxWhitespaceDeltaChars = clampInt(numberFromUnknown(raw.maxWhitespaceDeltaChars), target.maxWhitespaceDeltaChars, 4_096, 2_000_000);
+}
+
+function mergeLoopSafety(target: GoalLoopSafetyRuntimeConfig, raw: RawGoalLoopSafetyConfig | undefined): void {
+  if (!raw) return;
+  const enabled = boolFromUnknown(raw.enabled);
+  if (enabled !== undefined) target.enabled = enabled;
+  target.maxRuntimeMs = clampInt(numberFromUnknown(raw.maxRuntimeMs), target.maxRuntimeMs, 0, 7 * 24 * 60 * 60 * 1000);
+  target.minAttemptsBeforeStallCheck = clampInt(numberFromUnknown(raw.minAttemptsBeforeStallCheck), target.minAttemptsBeforeStallCheck, 1, 1000);
+  target.maxStalledAttempts = clampInt(numberFromUnknown(raw.maxStalledAttempts), target.maxStalledAttempts, 1, 1000);
+  target.minStalledRuntimeMs = clampInt(numberFromUnknown(raw.minStalledRuntimeMs), target.minStalledRuntimeMs, 0, 7 * 24 * 60 * 60 * 1000);
 }
 
 function normalizeThinking(value: unknown): GoalThinkingLevel | undefined {

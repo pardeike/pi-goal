@@ -33,6 +33,19 @@ const observerModel = args.observerModel ?? args.verifierModel ?? "ollama/qwen3.
 const observerThinking = args.observerThinking ?? args.verifierThinking ?? "off";
 const summarizerModel = args.summarizerModel ?? observerModel;
 const summarizerThinking = args.summarizerThinking ?? observerThinking;
+const childEnv = {
+  ...process.env,
+  PI_GOAL_OBSERVER_MODEL: observerModel,
+  PI_GOAL_OBSERVER_THINKING: observerThinking,
+  PI_GOAL_SUMMARIZER_MODEL: summarizerModel,
+  PI_GOAL_SUMMARIZER_THINKING: summarizerThinking,
+};
+
+if (args.maxAttempts) childEnv.PI_GOAL_MAX_ATTEMPTS = args.maxAttempts;
+if (args.maxRuntimeMs) childEnv.PI_GOAL_MAX_RUNTIME_MS = args.maxRuntimeMs;
+if (args.minAttemptsBeforeStallCheck) childEnv.PI_GOAL_MIN_ATTEMPTS_BEFORE_STALL_CHECK = args.minAttemptsBeforeStallCheck;
+if (args.maxStalledAttempts) childEnv.PI_GOAL_MAX_STALLED_ATTEMPTS = args.maxStalledAttempts;
+if (args.minStalledRuntimeMs) childEnv.PI_GOAL_MIN_STALLED_RUNTIME_MS = args.minStalledRuntimeMs;
 
 const piArgs = [
   "exec",
@@ -67,14 +80,7 @@ const jsonl = createWriteStream(args.jsonl, { flags: "w" });
 const transcriptLines = [];
 const proc = spawn("npm", piArgs, {
   cwd: args.cwd,
-  env: {
-    ...process.env,
-    PI_GOAL_OBSERVER_MODEL: observerModel,
-    PI_GOAL_OBSERVER_THINKING: observerThinking,
-    PI_GOAL_SUMMARIZER_MODEL: summarizerModel,
-    PI_GOAL_SUMMARIZER_THINKING: summarizerThinking,
-    PI_GOAL_MAX_ATTEMPTS: args.maxAttempts ?? "5",
-  },
+  env: childEnv,
   stdio: ["pipe", "pipe", "pipe"],
 });
 
@@ -277,7 +283,11 @@ Optional:
   --observerThinking off
   --summarizerModel openai/gpt-4.1-nano
   --summarizerThinking off
-  --maxAttempts 5
+  --maxAttempts 10000
+  --maxRuntimeMs 0
+  --minAttemptsBeforeStallCheck 20
+  --maxStalledAttempts 12
+  --minStalledRuntimeMs 43200000
   --maxEventBytes 20971520
   --maxJsonlBytes 104857600
   --timeoutMs 900000`);

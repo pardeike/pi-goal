@@ -2,6 +2,7 @@ import { join } from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { createAttemptGuardMetrics, recordAttemptGuardUpdate, type AttemptGuardTrip } from "./attempt-guard.ts";
 import { defaultGoalConfig, loadGoalConfig } from "./config.ts";
+import { applyLoopSafety } from "./loop-safety.ts";
 import { buildInitialGoalPrompt, buildRetryPrompt } from "./prompts.ts";
 import { createGoalRun, extractLatestAssistantText, formatModelRef, goalStateEntry, isActive, latestGoalRunFromEntries, modelRefFromModel, nextAttempt, parseGoalCommand, withStatus, withVerdict } from "./state.ts";
 import { clearGoalWidget, updateGoalUI } from "./tui.ts";
@@ -242,7 +243,7 @@ export default function goalExtension(pi: ExtensionAPI): void {
         verdict,
       });
 
-      const judged = withVerdict(
+      const judgedBeforeSafety = withVerdict(
         {
           ...verifying,
           verifierModel: modelRefFromModel(model, verifierThinkingLevel),
@@ -253,6 +254,13 @@ export default function goalExtension(pi: ExtensionAPI): void {
           evidence: [...verdict.evidence, `verifier log: ${logFile}`],
         },
       );
+      const safety = applyLoopSafety({
+        run: judgedBeforeSafety,
+        verdict,
+        evidence: verifierInput.evidence,
+        config: config.loopSafety,
+      });
+      const judged = safety.run;
 
       if (verdict.verdict === "PASS") {
         const passed = withStatus(judged, "passed");
@@ -261,8 +269,17 @@ export default function goalExtension(pi: ExtensionAPI): void {
         return;
       }
 
-      if (judged.attempt >= judged.maxAttempts) {
+      if (safety.shouldStop) {
         const failed = withStatus(judged, "failed");
+        setRun(failed, ctx);
+        ctx.ui.notify(safety.stopReason ?? "Loop safety stopped the goal.", "error");
+        return;
+      }
+
+      if (judged.attempt >= judged.maxAttempts) {
+        const failed = withStatus(judged, "failed", {
+          stopReason: `Goal reached maxAttempts (${judged.maxAttempts}).`,
+        });
         setRun(failed, ctx);
         ctx.ui.notify(`Goal failed after ${failed.maxAttempts} attempts.`, "error");
         return;
@@ -291,11 +308,22 @@ export default function goalExtension(pi: ExtensionAPI): void {
     if (!activeRun || activeRun.status !== "running") return;
 
     const verdict = attemptGuardVerdict(trip);
-    const judged = withVerdict(activeRun, verdict);
+    const judged = withAttemptGuardProgress(withVerdict(activeRun, verdict), trip);
     ctx.abort();
 
+    if (shouldStopAfterAttemptGuard(judged)) {
+      const failed = withStatus(judged, "failed", {
+        stopReason: `Loop safety stopped the goal after ${judged.stalledAttempts ?? 0} repeated attempt-guard aborts without progress.`,
+      });
+      setRun(failed, ctx);
+      ctx.ui.notify(failed.stopReason ?? "Loop safety stopped the goal.", "error");
+      return;
+    }
+
     if (judged.attempt >= judged.maxAttempts) {
-      const failed = withStatus(judged, "failed");
+      const failed = withStatus(judged, "failed", {
+        stopReason: `Goal reached maxAttempts (${judged.maxAttempts}) after an attempt-guard abort.`,
+      });
       setRun(failed, ctx);
       ctx.ui.notify(`Goal failed after attempt guard aborted attempt ${failed.attempt}/${failed.maxAttempts}.`, "error");
       return;
@@ -305,6 +333,27 @@ export default function goalExtension(pi: ExtensionAPI): void {
     setRun(retryRun, ctx);
     ctx.ui.notify(`Goal attempt ${judged.attempt}/${judged.maxAttempts} aborted by attempt guard.`, "warning");
     sendUserMessage(buildRetryPrompt(judged, verdict), ctx);
+  }
+
+  function withAttemptGuardProgress(run: GoalRun, trip: AttemptGuardTrip): GoalRun {
+    const progressSignature = `attempt-guard:${trip.reason}`;
+    const stalledAttempts = run.progressSignature === progressSignature ? (run.stalledAttempts ?? 0) + 1 : 0;
+    return {
+      ...run,
+      progressSignature,
+      stalledAttempts,
+      lastProgressAt: stalledAttempts === 0 ? Date.now() : run.lastProgressAt ?? run.startedAt,
+    };
+  }
+
+  function shouldStopAfterAttemptGuard(run: GoalRun): boolean {
+    if (!activeConfig.loopSafety.enabled) return false;
+    const stalledRuntimeMs = Math.max(0, Date.now() - (run.lastProgressAt ?? run.startedAt));
+    return (
+      run.attempt >= activeConfig.loopSafety.minAttemptsBeforeStallCheck &&
+      (run.stalledAttempts ?? 0) >= activeConfig.loopSafety.maxStalledAttempts &&
+      stalledRuntimeMs >= activeConfig.loopSafety.minStalledRuntimeMs
+    );
   }
 }
 

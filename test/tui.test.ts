@@ -9,20 +9,26 @@ describe("TUI formatting", () => {
   });
 
   it("includes verifier objections in the widget", () => {
-    const run = withVerdict(createGoalRun({ objective: "fix tests" }), {
-      verdict: "FAIL",
-      confidence: 0.75,
-      summary: "Missing validation.",
-      evidence: [],
-      objections: ["No test command was run."],
-      nextInstructions: "Run npm test.",
-      steeringFeedback: "Run the validation command before summarizing.",
-      observerMemory: "Attempt 1 changed code but did not run validation.",
-    });
+    const run = {
+      ...withVerdict(createGoalRun({ objective: "fix tests" }), {
+        verdict: "FAIL",
+        confidence: 0.75,
+        summary: "Missing validation.",
+        evidence: [],
+        objections: ["No test command was run."],
+        nextInstructions: "Run npm test.",
+        steeringFeedback: "Run the validation command before summarizing.",
+        observerMemory: "Attempt 1 changed code but did not run validation.",
+      }),
+      stalledAttempts: 2,
+      stopReason: "Loop safety stopped the goal.",
+    };
 
     expect(formatWidget(run)).toContain("Blocking: No test command was run.");
     expect(formatWidget(run)).toContain("Steer: Run the validation command before summarizing.");
     expect(formatWidget(run)).toContain("Next: Run npm test.");
     expect(formatWidget(run)).toContain("Observer memory: Attempt 1 changed code but did not run validation.");
+    expect(formatWidget(run)).toContain("No-progress cycles: 2");
+    expect(formatWidget(run)).toContain("Stop reason: Loop safety stopped the goal.");
   });
 });

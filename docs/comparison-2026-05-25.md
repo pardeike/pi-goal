@@ -150,4 +150,5 @@ The extension now addresses those as follows:
 - the observer verdict includes `observerMemory`, a bounded cross-attempt memory that is persisted on the goal run and passed into later observer attempts
 - failed observer verdicts can include `steeringFeedback`, which is fed back into the visible main session as a short nudge
 - an attempt guard aborts pathological active attempts with oversized or whitespace-heavy assistant stream deltas before they monopolize the loop
+- loop safety supports overnight-scale attempt budgets while stopping after a wall-clock limit or repeated verifier cycles with unchanged workspace and validation evidence for a configured minimum no-progress runtime
 - the RPC comparison harness caps single event and total JSONL sizes so broken streams do not consume unbounded disk

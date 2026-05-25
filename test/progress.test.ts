@@ -74,9 +74,19 @@ describe("verifier progress tracker", () => {
     const thinking = tracker.handle({ type: "thinking_delta", delta: "private reasoning" });
     const done = tracker.handle({ type: "agent_end" });
 
-    expect(first.message?.content).toBe("Independent verifier: Verifier visible output");
-    expect(first.message?.details.lines).toContain("Checking workspace evidence.");
-    expect(thinking.snapshot.action).toContain("Last visible output: Checking workspace evidence.");
-    expect(done.snapshot.action).toContain("Verifier output complete; parsing verdict:");
+    expect(first.message).toBeUndefined();
+    expect(thinking.snapshot.action).toContain("Visible output is being written to the transcript.");
+    expect(done.message?.content).toBe("Independent verifier: Verifier output complete");
+    expect(done.message?.details.lines).toContain("Checking workspace evidence.");
+    expect(done.snapshot.action).toBe("Verifier response complete; parsing verdict.");
+  });
+
+  it("chunks verifier text into transcript messages without mirroring it as widget action", () => {
+    const tracker = createVerifierProgressTracker();
+    const result = tracker.handle({ type: "text_delta", delta: `${"A".repeat(181)}\n` });
+
+    expect(result.snapshot.action).toBe("Verifier is writing visible output...");
+    expect(result.message?.content).toBe("Independent verifier: Verifier output");
+    expect(result.message?.details.lines[0]).toContain("A");
   });
 });

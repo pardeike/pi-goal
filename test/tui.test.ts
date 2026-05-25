@@ -47,8 +47,9 @@ describe("TUI formatting", () => {
     });
 
     expect(widget).toContain("Progress: Verifier tool running: bash npm test");
-    expect(widget).toContain("Verifier activity: turns 1 | tools 0 | hidden thinking chars 42");
-    expect(widget).toContain("Verifier text: Checking validation evidence");
+    expect(widget).toContain("Verifier activity: turns 1 | tools 0");
+    expect(widget).not.toContain("hidden thinking chars 42");
+    expect(widget).not.toContain("Verifier text: Checking validation evidence");
     expect(widget).toContain("> tool: bash npm test -> running");
   });
 

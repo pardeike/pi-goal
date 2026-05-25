@@ -50,16 +50,12 @@ export function formatWidget(run: GoalRun, progress?: GoalProgressSnapshot): str
 
   if (progress) {
     lines.push(`Progress: ${progress.action}`);
-    if (progress.turnCount !== undefined || progress.toolCount !== undefined || progress.thinkingChars !== undefined) {
+    if (progress.turnCount !== undefined || progress.toolCount !== undefined) {
       const metrics = [
         progress.turnCount !== undefined ? `turns ${progress.turnCount}` : "",
         progress.toolCount !== undefined ? `tools ${progress.toolCount}` : "",
-        progress.thinkingChars !== undefined ? `hidden thinking chars ${progress.thinkingChars}` : "",
       ].filter(Boolean);
       if (metrics.length > 0) lines.push(`Verifier activity: ${metrics.join(" | ")}`);
-    }
-    if (progress.textPreview?.trim()) {
-      lines.push(`Verifier text: ${truncate(progress.textPreview.trim(), 240).replace(/\s+/g, " ")}`);
     }
     for (const progressLine of progress.lines.slice(-5)) {
       lines.push(`> ${progressLine}`);

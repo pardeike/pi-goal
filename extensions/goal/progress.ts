@@ -39,7 +39,7 @@ export function registerGoalVerifierMessageRenderer(pi: ExtensionAPI): void {
     const labelColor = status === "success" ? "success" : status === "error" ? "error" : status === "running" ? "accent" : "dim";
     const lines = [
       `${theme.fg(labelColor, theme.bold("[goal verifier]"))} ${theme.fg("text", title)}`,
-      ...(details?.lines ?? []).map((line) => theme.fg("dim", sanitizeLine(line, MESSAGE_LINE_CHARS))),
+      ...(details?.lines ?? []).map((line) => theme.fg("text", sanitizeLine(line, MESSAGE_LINE_CHARS))),
     ];
 
     const box = new Box(1, 1, (text) => theme.bg("userMessageBg", text));
@@ -105,7 +105,7 @@ export function createVerifierProgressTracker(): {
   let snapshot = createGoalProgressSnapshot("verifying", "Verifying goal independently...");
   let textPreview = "";
   let textChars = 0;
-  let lastTextMessageChars = 0;
+  let textMessageBuffer = "";
   let turnCount = 0;
   let toolCount = 0;
   let thinkingChars = 0;
@@ -133,26 +133,28 @@ export function createVerifierProgressTracker(): {
         }
         case "text_delta": {
           textChars += event.delta.length;
+          textMessageBuffer += event.delta;
           textPreview = tailText(`${textPreview}${event.delta}`, PROGRESS_TEXT_LIMIT);
-          const snapshot = update(outputAction(textPreview));
-          if (!shouldEmitTextMessage(textChars, lastTextMessageChars, event.delta)) {
+          const snapshot = update("Verifier is writing visible output...");
+          if (!shouldEmitTextMessage(textMessageBuffer, event.delta)) {
             return { snapshot };
           }
-          lastTextMessageChars = textChars;
+          const lines = previewLines(textMessageBuffer);
+          textMessageBuffer = "";
           return {
             snapshot,
             message: createVerifierFlowMessage({
               phase: "verifying",
               status: "running",
-              title: "Verifier visible output",
-              lines: previewLines(textPreview),
+              title: "Verifier output",
+              lines,
             }),
           };
         }
         case "thinking_delta": {
           thinkingChars += event.delta.length;
-          const suffix = textPreview.trim() ? ` Last visible output: ${sanitizeLine(textPreview, MESSAGE_LINE_CHARS - 40)}` : " No visible output yet.";
-          return { snapshot: update(`Verifier is thinking (${thinkingChars} chars hidden).${suffix}`) };
+          const suffix = textPreview.trim() ? " Visible output is being written to the transcript." : " Waiting for visible output.";
+          return { snapshot: update(`Verifier is thinking.${suffix}`) };
         }
         case "tool_start": {
           const description = describeTool(event.toolName, event.args);
@@ -186,18 +188,19 @@ export function createVerifierProgressTracker(): {
           };
         }
         case "agent_end": {
-          const snapshot = update(textPreview.trim() ? outputAction(textPreview, true) : "Verifier response complete; parsing verdict.", "verifier response complete");
-          if (!textPreview.trim() || lastTextMessageChars === textChars) {
+          const snapshot = update("Verifier response complete; parsing verdict.", "verifier response complete");
+          if (!textMessageBuffer.trim()) {
             return { snapshot };
           }
-          lastTextMessageChars = textChars;
+          const lines = previewLines(textMessageBuffer);
+          textMessageBuffer = "";
           return {
             snapshot,
             message: createVerifierFlowMessage({
               phase: "parsing",
               status: "running",
               title: "Verifier output complete",
-              lines: previewLines(textPreview),
+              lines,
             }),
           };
         }
@@ -232,14 +235,9 @@ function compactLines(lines: string[]): string[] {
   return lines.map((line) => sanitizeLine(line, MESSAGE_LINE_CHARS)).filter(Boolean).slice(-PROGRESS_LINE_LIMIT);
 }
 
-function outputAction(text: string, complete = false): string {
-  const prefix = complete ? "Verifier output complete; parsing verdict: " : "Verifier output: ";
-  return `${prefix}${sanitizeLine(text, MESSAGE_LINE_CHARS - prefix.length)}`;
-}
-
-function shouldEmitTextMessage(textChars: number, lastTextMessageChars: number, delta: string): boolean {
-  if (lastTextMessageChars === 0) return true;
-  return textChars - lastTextMessageChars >= TEXT_MESSAGE_CHAR_STEP || /[\n}\]]/.test(delta);
+function shouldEmitTextMessage(text: string, delta: string): boolean {
+  if (!text.trim()) return false;
+  return text.length >= TEXT_MESSAGE_CHAR_STEP || /[\n}\]]/.test(delta);
 }
 
 function previewLines(text: string): string[] {

@@ -1,0 +1,236 @@
+import { readFile } from "node:fs/promises";
+import { dirname, isAbsolute, join, resolve } from "node:path";
+import type { GoalEvidenceRuntimeConfig, GoalRoleRuntimeConfig, GoalRuntimeConfig, GoalThinkingLevel } from "./types.ts";
+
+const THINKING_LEVELS = new Set<GoalThinkingLevel>(["off", "minimal", "low", "medium", "high", "xhigh"]);
+const DEFAULT_OBSERVER_TOOLS = ["read", "bash", "grep", "find", "ls"];
+
+interface RawGoalRoleConfig {
+  model?: unknown;
+  thinking?: unknown;
+  systemPrompt?: unknown;
+  systemPromptFile?: unknown;
+  promptTemplate?: unknown;
+  promptTemplateFile?: unknown;
+  extraInstructions?: unknown;
+  extraInstructionsFile?: unknown;
+  tools?: unknown;
+}
+
+interface RawGoalEvidenceConfig {
+  validationCommands?: unknown;
+  extraValidationCommands?: unknown;
+  validationCommandLimit?: unknown;
+  validationTimeoutMs?: unknown;
+}
+
+interface RawGoalConfig {
+  maxAttempts?: unknown;
+  observer?: RawGoalRoleConfig;
+  verifier?: RawGoalRoleConfig;
+  summarizer?: RawGoalRoleConfig;
+  summary?: RawGoalRoleConfig;
+  evidence?: RawGoalEvidenceConfig;
+}
+
+interface LoadedRawConfig {
+  path?: string;
+  config: RawGoalConfig;
+}
+
+export function defaultGoalConfig(): GoalRuntimeConfig {
+  return {
+    maxAttempts: 5,
+    observer: {
+      tools: [...DEFAULT_OBSERVER_TOOLS],
+    },
+    summarizer: {
+      tools: [],
+    },
+    evidence: {
+      extraValidationCommands: [],
+      validationCommandLimit: 3,
+      validationTimeoutMs: 120_000,
+    },
+  };
+}
+
+export async function loadGoalConfig(cwd: string, env: NodeJS.ProcessEnv = process.env): Promise<GoalRuntimeConfig> {
+  const loaded = await loadRawConfig(cwd, env);
+  const config = defaultGoalConfig();
+  if (loaded.path) config.source = loaded.path;
+
+  const observerRaw = mergeRawRole(loaded.config.verifier, loaded.config.observer);
+  const summarizerRaw = mergeRawRole(loaded.config.summary, loaded.config.summarizer);
+  mergeRole(config.observer, await resolvePromptFiles(observerRaw, cwd, loaded.path));
+  mergeRole(config.summarizer, await resolvePromptFiles(summarizerRaw, cwd, loaded.path));
+  mergeEvidence(config.evidence, loaded.config.evidence);
+  config.maxAttempts = clampInt(numberFromUnknown(loaded.config.maxAttempts), config.maxAttempts, 1, 20);
+
+  applyEnvOverrides(config, env);
+  return config;
+}
+
+function applyEnvOverrides(config: GoalRuntimeConfig, env: NodeJS.ProcessEnv): void {
+  config.maxAttempts = clampInt(parseEnvInt(env.PI_GOAL_MAX_ATTEMPTS), config.maxAttempts, 1, 20);
+
+  applyRoleEnv(config.observer, env, {
+    model: ["PI_GOAL_OBSERVER_MODEL", "PI_GOAL_VERIFIER_MODEL"],
+    thinking: ["PI_GOAL_OBSERVER_THINKING", "PI_GOAL_VERIFIER_THINKING"],
+    systemPrompt: ["PI_GOAL_OBSERVER_SYSTEM_PROMPT", "PI_GOAL_VERIFIER_SYSTEM_PROMPT"],
+    promptTemplate: ["PI_GOAL_OBSERVER_PROMPT_TEMPLATE", "PI_GOAL_VERIFIER_PROMPT_TEMPLATE"],
+    extraInstructions: ["PI_GOAL_OBSERVER_EXTRA_INSTRUCTIONS", "PI_GOAL_VERIFIER_EXTRA_INSTRUCTIONS"],
+    tools: ["PI_GOAL_OBSERVER_TOOLS", "PI_GOAL_VERIFIER_TOOLS"],
+  });
+
+  applyRoleEnv(config.summarizer, env, {
+    model: ["PI_GOAL_SUMMARIZER_MODEL", "PI_GOAL_SUMMARY_MODEL"],
+    thinking: ["PI_GOAL_SUMMARIZER_THINKING", "PI_GOAL_SUMMARY_THINKING"],
+    systemPrompt: ["PI_GOAL_SUMMARIZER_SYSTEM_PROMPT", "PI_GOAL_SUMMARY_SYSTEM_PROMPT"],
+    promptTemplate: ["PI_GOAL_SUMMARIZER_PROMPT_TEMPLATE", "PI_GOAL_SUMMARY_PROMPT_TEMPLATE"],
+    extraInstructions: ["PI_GOAL_SUMMARIZER_EXTRA_INSTRUCTIONS", "PI_GOAL_SUMMARY_EXTRA_INSTRUCTIONS"],
+    tools: ["PI_GOAL_SUMMARIZER_TOOLS", "PI_GOAL_SUMMARY_TOOLS"],
+  });
+
+  const validationCommands = splitEnvList(env.PI_GOAL_VALIDATION_COMMANDS);
+  if (validationCommands.length > 0) config.evidence.validationCommands = validationCommands;
+  const extraValidationCommands = splitEnvList(env.PI_GOAL_EXTRA_VALIDATION_COMMANDS);
+  if (extraValidationCommands.length > 0) config.evidence.extraValidationCommands = extraValidationCommands;
+  config.evidence.validationCommandLimit = clampInt(parseEnvInt(env.PI_GOAL_VALIDATION_COMMAND_LIMIT), config.evidence.validationCommandLimit, 0, 10);
+  config.evidence.validationTimeoutMs = clampInt(parseEnvInt(env.PI_GOAL_VALIDATION_TIMEOUT_MS), config.evidence.validationTimeoutMs, 5_000, 600_000);
+}
+
+function applyRoleEnv(role: GoalRoleRuntimeConfig, env: NodeJS.ProcessEnv, keys: Record<"model" | "thinking" | "systemPrompt" | "promptTemplate" | "extraInstructions" | "tools", string[]>): void {
+  const model = firstEnv(env, keys.model);
+  if (model) role.model = model;
+
+  const thinking = normalizeThinking(firstEnv(env, keys.thinking));
+  if (thinking) role.thinking = thinking;
+
+  const systemPrompt = firstEnv(env, keys.systemPrompt);
+  if (systemPrompt) role.systemPrompt = systemPrompt;
+
+  const promptTemplate = firstEnv(env, keys.promptTemplate);
+  if (promptTemplate) role.promptTemplate = promptTemplate;
+
+  const extraInstructions = firstEnv(env, keys.extraInstructions);
+  if (extraInstructions) role.extraInstructions = extraInstructions;
+
+  const tools = firstEnv(env, keys.tools);
+  if (tools) role.tools = splitEnvList(tools);
+}
+
+async function loadRawConfig(cwd: string, env: NodeJS.ProcessEnv): Promise<LoadedRawConfig> {
+  for (const candidate of configCandidates(cwd, env)) {
+    try {
+      const text = await readFile(candidate, "utf8");
+      const parsed = JSON.parse(text);
+      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+        throw new Error("top-level config must be a JSON object");
+      }
+      return { path: candidate, config: parsed as RawGoalConfig };
+    } catch (error) {
+      const code = (error as { code?: string }).code;
+      if (code === "ENOENT") continue;
+      throw new Error(`Failed to read goal config ${candidate}: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+  return { config: {} };
+}
+
+function configCandidates(cwd: string, env: NodeJS.ProcessEnv): string[] {
+  const configured = env.PI_GOAL_CONFIG?.trim();
+  if (configured) {
+    return [isAbsolute(configured) ? configured : resolve(cwd, configured)];
+  }
+  return [
+    join(cwd, "pi-goal.config.json"),
+    join(cwd, ".pi-goal.json"),
+    join(cwd, ".pi", "goal.config.json"),
+  ];
+}
+
+function mergeRawRole(base: RawGoalRoleConfig | undefined, override: RawGoalRoleConfig | undefined): RawGoalRoleConfig {
+  return {
+    ...(base ?? {}),
+    ...(override ?? {}),
+  };
+}
+
+async function resolvePromptFiles(raw: RawGoalRoleConfig, cwd: string, configPath?: string): Promise<RawGoalRoleConfig> {
+  const baseDir = configPath ? dirname(configPath) : cwd;
+  const resolved = { ...raw };
+  resolved.systemPrompt = await readConfiguredText(raw.systemPrompt, raw.systemPromptFile, baseDir);
+  resolved.promptTemplate = await readConfiguredText(raw.promptTemplate, raw.promptTemplateFile, baseDir);
+  resolved.extraInstructions = await readConfiguredText(raw.extraInstructions, raw.extraInstructionsFile, baseDir);
+  return resolved;
+}
+
+async function readConfiguredText(inline: unknown, file: unknown, baseDir: string): Promise<unknown> {
+  if (typeof inline === "string") return inline;
+  if (typeof file !== "string" || !file.trim()) return inline;
+  const path = isAbsolute(file) ? file : resolve(baseDir, file);
+  return readFile(path, "utf8");
+}
+
+function mergeRole(target: GoalRoleRuntimeConfig, raw: RawGoalRoleConfig): void {
+  if (typeof raw.model === "string" && raw.model.trim()) target.model = raw.model.trim();
+  const thinking = normalizeThinking(raw.thinking);
+  if (thinking) target.thinking = thinking;
+  if (typeof raw.systemPrompt === "string" && raw.systemPrompt.trim()) target.systemPrompt = raw.systemPrompt.trim();
+  if (typeof raw.promptTemplate === "string" && raw.promptTemplate.trim()) target.promptTemplate = raw.promptTemplate.trim();
+  if (typeof raw.extraInstructions === "string" && raw.extraInstructions.trim()) target.extraInstructions = raw.extraInstructions.trim();
+  const tools = normalizeStringArray(raw.tools);
+  if (tools) target.tools = tools;
+}
+
+function mergeEvidence(target: GoalEvidenceRuntimeConfig, raw: RawGoalEvidenceConfig | undefined): void {
+  if (!raw) return;
+  const validationCommands = normalizeStringArray(raw.validationCommands);
+  if (validationCommands) target.validationCommands = validationCommands;
+  const extraValidationCommands = normalizeStringArray(raw.extraValidationCommands);
+  if (extraValidationCommands) target.extraValidationCommands = extraValidationCommands;
+  target.validationCommandLimit = clampInt(numberFromUnknown(raw.validationCommandLimit), target.validationCommandLimit, 0, 10);
+  target.validationTimeoutMs = clampInt(numberFromUnknown(raw.validationTimeoutMs), target.validationTimeoutMs, 5_000, 600_000);
+}
+
+function normalizeThinking(value: unknown): GoalThinkingLevel | undefined {
+  return typeof value === "string" && THINKING_LEVELS.has(value as GoalThinkingLevel) ? (value as GoalThinkingLevel) : undefined;
+}
+
+function normalizeStringArray(value: unknown): string[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  return value.filter((item): item is string => typeof item === "string").map((item) => item.trim()).filter(Boolean);
+}
+
+function firstEnv(env: NodeJS.ProcessEnv, names: string[]): string | undefined {
+  for (const name of names) {
+    const value = env[name]?.trim();
+    if (value) return value;
+  }
+  return undefined;
+}
+
+function splitEnvList(value: string | undefined): string[] {
+  if (!value?.trim()) return [];
+  return value
+    .split(/\n|;;|,/)
+    .map((item) => item.trim())
+    .filter(Boolean);
+}
+
+function parseEnvInt(value: string | undefined): number | undefined {
+  if (!value?.trim()) return undefined;
+  return numberFromUnknown(value);
+}
+
+function numberFromUnknown(value: unknown): number | undefined {
+  const parsed = typeof value === "number" ? value : typeof value === "string" ? Number.parseInt(value, 10) : Number.NaN;
+  return Number.isFinite(parsed) ? parsed : undefined;
+}
+
+function clampInt(value: number | undefined, fallback: number, min: number, max: number): number {
+  if (!Number.isFinite(value)) return fallback;
+  const finite = value ?? fallback;
+  return Math.max(min, Math.min(max, Math.trunc(finite)));
+}

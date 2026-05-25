@@ -1,0 +1,17 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
+export PI_GOAL_OBSERVER_MODEL="${PI_GOAL_OBSERVER_MODEL:-${PI_GOAL_VERIFIER_MODEL:-ollama/qwen3.6:27b-coding-nvfp4}}"
+export PI_GOAL_OBSERVER_THINKING="${PI_GOAL_OBSERVER_THINKING:-${PI_GOAL_VERIFIER_THINKING:-off}}"
+export PI_GOAL_SUMMARIZER_MODEL="${PI_GOAL_SUMMARIZER_MODEL:-${PI_GOAL_SUMMARY_MODEL:-$PI_GOAL_OBSERVER_MODEL}}"
+export PI_GOAL_SUMMARIZER_THINKING="${PI_GOAL_SUMMARIZER_THINKING:-${PI_GOAL_SUMMARY_THINKING:-off}}"
+export PI_GOAL_MAX_ATTEMPTS="${PI_GOAL_MAX_ATTEMPTS:-5}"
+
+exec npm exec --prefix "$repo_root" -- pi \
+  --no-extensions \
+  -e "$repo_root/extensions/goal/index.ts" \
+  --model ollama/qwen2.5:0.5b \
+  --thinking off \
+  "$@"

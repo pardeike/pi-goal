@@ -1,0 +1,172 @@
+import type { Model } from "@earendil-works/pi-ai";
+import type { ModelRegistry } from "@earendil-works/pi-coding-agent";
+
+export const GOAL_STATE_CUSTOM_TYPE = "pi-goal-state";
+
+export type GoalStatus = "running" | "verifying" | "passed" | "failed" | "cancelled";
+
+export interface GoalModelRef {
+  provider: string;
+  id: string;
+  name?: string;
+  thinkingLevel?: string;
+}
+
+export type GoalThinkingLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhigh";
+
+export interface GoalRoleRuntimeConfig {
+  model?: string;
+  thinking?: GoalThinkingLevel;
+  systemPrompt?: string;
+  promptTemplate?: string;
+  extraInstructions?: string;
+  tools: string[];
+}
+
+export interface GoalEvidenceRuntimeConfig {
+  validationCommands?: string[];
+  extraValidationCommands: string[];
+  validationCommandLimit: number;
+  validationTimeoutMs: number;
+}
+
+export interface GoalRuntimeConfig {
+  source?: string;
+  maxAttempts: number;
+  observer: GoalRoleRuntimeConfig;
+  summarizer: GoalRoleRuntimeConfig;
+  evidence: GoalEvidenceRuntimeConfig;
+}
+
+export interface GoalRun {
+  id: string;
+  objective: string;
+  status: GoalStatus;
+  attempt: number;
+  maxAttempts: number;
+  startedAt: number;
+  updatedAt: number;
+  mainModel?: GoalModelRef;
+  verifierModel?: GoalModelRef;
+  summarizerModel?: GoalModelRef;
+  lastVerdict?: VerifierVerdict;
+  lastMainLeafId?: string | null;
+  verifierLogDir?: string;
+}
+
+export interface GoalStateEntry {
+  version: 1;
+  run: GoalRun;
+}
+
+export type GoalCommand =
+  | { kind: "start"; objective: string }
+  | { kind: "status" }
+  | { kind: "cancel" }
+  | { kind: "help" };
+
+export interface CommandResult {
+  ok: true;
+  command: GoalCommand;
+}
+
+export interface CommandError {
+  ok: false;
+  message: string;
+}
+
+export type ParsedCommand = CommandResult | CommandError;
+
+export interface CommandEvidence {
+  command: string;
+  exitCode: number;
+  stdout: string;
+  stderr: string;
+}
+
+export interface FileExcerptEvidence {
+  path: string;
+  exists: boolean;
+  content: string;
+  truncated: boolean;
+}
+
+export interface FileListEvidence {
+  label: string;
+  files: string[];
+  total: number;
+  truncated: boolean;
+}
+
+export interface SessionSummaryEvidence {
+  generatedAt: string;
+  entryCount: number;
+  summary: string;
+  model?: GoalModelRef;
+  rawOutput?: string;
+}
+
+export interface EvidenceBundle {
+  cwd: string;
+  collectedAt: string;
+  sessionFile?: string;
+  gitStatus: CommandEvidence;
+  gitDiffStat: CommandEvidence;
+  gitDiffNameOnly: CommandEvidence;
+  rootListing: CommandEvidence;
+  readmeExcerpt: FileExcerptEvidence;
+  sourceFiles: FileListEvidence;
+  testFiles: FileListEvidence;
+  detectedCommands: string[];
+  validationResults: CommandEvidence[];
+  sessionSummary?: SessionSummaryEvidence;
+}
+
+export interface VerifierVerdict {
+  verdict: "PASS" | "FAIL";
+  confidence: number;
+  summary: string;
+  evidence: string[];
+  objections: string[];
+  nextInstructions: string;
+  steeringFeedback?: string;
+  rawOutput?: string;
+}
+
+export interface VerifierInput {
+  goal: GoalRun;
+  cwd: string;
+  sessionFile?: string;
+  latestAssistantSummary: string;
+  latestMessages: unknown[];
+  evidence: EvidenceBundle;
+  model: Model<any>;
+  modelRegistry: ModelRegistry;
+  thinkingLevel?: GoalThinkingLevel;
+  observerConfig: GoalRoleRuntimeConfig;
+}
+
+export interface VerifierAdapter {
+  verify(input: VerifierInput): Promise<VerifierVerdict>;
+}
+
+export interface SessionSummarizerInput {
+  goal: GoalRun;
+  cwd: string;
+  sessionFile?: string;
+  entries: unknown[];
+  model: Model<any>;
+  modelRegistry: ModelRegistry;
+  thinkingLevel?: GoalThinkingLevel;
+  summarizerConfig: GoalRoleRuntimeConfig;
+}
+
+export interface SessionSummarizerAdapter {
+  summarize(input: SessionSummarizerInput): Promise<SessionSummaryEvidence>;
+}
+
+export interface LoopDecision {
+  shouldContinue: boolean;
+  prompt?: string;
+  finalStatus?: Extract<GoalStatus, "passed" | "failed">;
+}

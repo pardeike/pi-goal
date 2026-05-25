@@ -1,0 +1,26 @@
+import { describe, expect, it } from "vitest";
+import { createGoalRun, withVerdict } from "../extensions/goal/state.ts";
+import { formatStatus, formatWidget } from "../extensions/goal/tui.ts";
+
+describe("TUI formatting", () => {
+  it("formats active status compactly", () => {
+    const run = createGoalRun({ objective: "fix tests", maxAttempts: 3 });
+    expect(formatStatus(run)).toBe("goal: running 1/3");
+  });
+
+  it("includes verifier objections in the widget", () => {
+    const run = withVerdict(createGoalRun({ objective: "fix tests" }), {
+      verdict: "FAIL",
+      confidence: 0.75,
+      summary: "Missing validation.",
+      evidence: [],
+      objections: ["No test command was run."],
+      nextInstructions: "Run npm test.",
+      steeringFeedback: "Run the validation command before summarizing.",
+    });
+
+    expect(formatWidget(run)).toContain("Blocking: No test command was run.");
+    expect(formatWidget(run)).toContain("Steer: Run the validation command before summarizing.");
+    expect(formatWidget(run)).toContain("Next: Run npm test.");
+  });
+});

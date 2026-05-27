@@ -176,6 +176,10 @@ Example:
   "httpIdleTimeout": {
     "enabled": true,
     "timeoutMs": 0
+  },
+  "mainToolIdleTimeout": {
+    "enabled": true,
+    "timeoutMs": 300000
   }
 }
 ```
@@ -219,6 +223,8 @@ PI_GOAL_MAX_STALLED_ATTEMPTS=12
 PI_GOAL_MIN_STALLED_RUNTIME_MS=43200000
 PI_GOAL_HTTP_IDLE_TIMEOUT_ENABLED=true
 PI_GOAL_HTTP_IDLE_TIMEOUT_MS=0
+PI_GOAL_MAIN_TOOL_IDLE_TIMEOUT_ENABLED=true
+PI_GOAL_MAIN_TOOL_IDLE_TIMEOUT_MS=300000
 ```
 
 Legacy `PI_GOAL_VERIFIER_*` and `PI_GOAL_SUMMARY_*` names still work as aliases for observer and summarizer settings.
@@ -226,6 +232,8 @@ Legacy `PI_GOAL_VERIFIER_*` and `PI_GOAL_SUMMARY_*` names still work as aliases 
 If no observer model is configured, the observer uses the current main-session model in a clean independent context. If no summarizer model is configured, the summarizer uses the observer model. Validation command capture is bounded by `validationCommandLimit` and `validationTimeoutMs`.
 
 While `/goal` is active, `httpIdleTimeout` temporarily overrides Pi's HTTP idle timeout. The default `timeoutMs: 0` disables the idle timeout for goal runs, and `/goal` restores the prior Pi setting when the run passes, fails, is cancelled, or the session shuts down.
+
+`mainToolIdleTimeout` aborts and retries the visible main-session attempt when a tool call goes quiet for too long. The default timeout is 5 minutes. This catches cases like a hung shell pipeline before the run disappears into an endless wait without ever reaching independent verification.
 
 ## Observer Model
 
@@ -297,6 +305,8 @@ The guard is deliberately narrow. It does not judge code quality or goal complet
 - `minStalledRuntimeMs` is the minimum wall-clock time without progress before stalled-loop detection can stop the run. It defaults to `43200000` milliseconds, or 12 hours.
 
 `httpIdleTimeout` temporarily overrides Pi's HTTP idle timeout while a `/goal` run is active. The default `timeoutMs` is `0`, which disables the idle timeout so slow local thinking models do not get terminated after Pi's normal 5-minute idle window. The previous Pi setting is restored when the goal passes, fails, is cancelled, or the session shuts down. Set `PI_GOAL_HTTP_IDLE_TIMEOUT_MS` or `PI_GOAL_HTTP_IDLE_TIMEOUT_ENABLED=false` to override this behavior.
+
+`mainToolIdleTimeout` is the guard for the visible main session itself. When an active tool stops producing updates and does not finish before `timeoutMs`, `/goal` aborts the attempt, records a synthetic `FAIL`, and feeds back a retry prompt that tells the main model to use a smaller or bounded command. The default `timeoutMs` is `300000` milliseconds, or 5 minutes. Set `PI_GOAL_MAIN_TOOL_IDLE_TIMEOUT_MS=0` or `PI_GOAL_MAIN_TOOL_IDLE_TIMEOUT_ENABLED=false` to disable it.
 
 Progress is detected deterministically from evidence collected before observer judgement: `git status`, `git diff --stat`, changed file names, validation commands, validation exit codes, and normalized validation output. A new failure mode or changed validation result resets the stalled count. Reworded observer text alone does not count as progress.
 

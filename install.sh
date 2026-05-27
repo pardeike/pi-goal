@@ -196,6 +196,11 @@ create_global_config_template() {
     "_comment": "Temporarily override Pi's HTTP idle timeout while /goal is active. timeoutMs 0 disables the idle timeout; the previous Pi setting is restored when the goal passes, fails, or is cancelled.",
     "enabled": true,
     "timeoutMs": 0
+  },
+  "mainToolIdleTimeout": {
+    "_comment": "Abort and retry a visible main-session attempt when a tool goes quiet for too long. timeoutMs 0 disables this guard.",
+    "enabled": true,
+    "timeoutMs": 300000
   }
 }
 JSON

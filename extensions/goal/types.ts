@@ -50,6 +50,11 @@ export interface GoalHttpIdleTimeoutRuntimeConfig {
   timeoutMs: number;
 }
 
+export interface GoalMainToolIdleTimeoutRuntimeConfig {
+  enabled: boolean;
+  timeoutMs: number;
+}
+
 export interface GoalRuntimeConfig {
   source?: string;
   globalSource?: string;
@@ -60,6 +65,7 @@ export interface GoalRuntimeConfig {
   attemptGuard: GoalAttemptGuardRuntimeConfig;
   loopSafety: GoalLoopSafetyRuntimeConfig;
   httpIdleTimeout: GoalHttpIdleTimeoutRuntimeConfig;
+  mainToolIdleTimeout: GoalMainToolIdleTimeoutRuntimeConfig;
 }
 
 export interface GoalRun {

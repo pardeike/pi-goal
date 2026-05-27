@@ -1,7 +1,7 @@
 import { readFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, isAbsolute, join, resolve } from "node:path";
-import type { GoalAttemptGuardRuntimeConfig, GoalEvidenceRuntimeConfig, GoalHttpIdleTimeoutRuntimeConfig, GoalLoopSafetyRuntimeConfig, GoalRoleRuntimeConfig, GoalRuntimeConfig, GoalThinkingLevel } from "./types.ts";
+import type { GoalAttemptGuardRuntimeConfig, GoalEvidenceRuntimeConfig, GoalHttpIdleTimeoutRuntimeConfig, GoalLoopSafetyRuntimeConfig, GoalMainToolIdleTimeoutRuntimeConfig, GoalRoleRuntimeConfig, GoalRuntimeConfig, GoalThinkingLevel } from "./types.ts";
 
 const THINKING_LEVELS = new Set<GoalThinkingLevel>(["off", "minimal", "low", "medium", "high", "xhigh"]);
 const DEFAULT_OBSERVER_TOOLS = ["read", "bash", "grep", "find", "ls"];
@@ -45,6 +45,11 @@ interface RawGoalHttpIdleTimeoutConfig {
   timeoutMs?: unknown;
 }
 
+interface RawGoalMainToolIdleTimeoutConfig {
+  enabled?: unknown;
+  timeoutMs?: unknown;
+}
+
 interface RawGoalConfig {
   maxAttempts?: unknown;
   observer?: RawGoalRoleConfig;
@@ -55,6 +60,7 @@ interface RawGoalConfig {
   attemptGuard?: RawGoalAttemptGuardConfig;
   loopSafety?: RawGoalLoopSafetyConfig;
   httpIdleTimeout?: RawGoalHttpIdleTimeoutConfig;
+  mainToolIdleTimeout?: RawGoalMainToolIdleTimeoutConfig;
 }
 
 interface LoadedRawConfig {
@@ -93,6 +99,10 @@ export function defaultGoalConfig(): GoalRuntimeConfig {
       enabled: true,
       timeoutMs: 0,
     },
+    mainToolIdleTimeout: {
+      enabled: true,
+      timeoutMs: 300_000,
+    },
   };
 }
 
@@ -124,6 +134,7 @@ async function mergeConfig(config: GoalRuntimeConfig, loaded: LoadedRawConfig, c
   mergeAttemptGuard(config.attemptGuard, loaded.config.attemptGuard);
   mergeLoopSafety(config.loopSafety, loaded.config.loopSafety);
   mergeHttpIdleTimeout(config.httpIdleTimeout, loaded.config.httpIdleTimeout);
+  mergeMainToolIdleTimeout(config.mainToolIdleTimeout, loaded.config.mainToolIdleTimeout);
   config.maxAttempts = clampInt(numberFromUnknown(loaded.config.maxAttempts), config.maxAttempts, 1, 10_000);
 }
 
@@ -171,6 +182,10 @@ function applyEnvOverrides(config: GoalRuntimeConfig, env: NodeJS.ProcessEnv): v
   const httpIdleEnabled = parseEnvBool(env.PI_GOAL_HTTP_IDLE_TIMEOUT_ENABLED);
   if (httpIdleEnabled !== undefined) config.httpIdleTimeout.enabled = httpIdleEnabled;
   config.httpIdleTimeout.timeoutMs = clampInt(parseEnvInt(env.PI_GOAL_HTTP_IDLE_TIMEOUT_MS), config.httpIdleTimeout.timeoutMs, 0, 7 * 24 * 60 * 60 * 1000);
+
+  const mainToolIdleEnabled = parseEnvBool(env.PI_GOAL_MAIN_TOOL_IDLE_TIMEOUT_ENABLED);
+  if (mainToolIdleEnabled !== undefined) config.mainToolIdleTimeout.enabled = mainToolIdleEnabled;
+  config.mainToolIdleTimeout.timeoutMs = clampInt(parseEnvInt(env.PI_GOAL_MAIN_TOOL_IDLE_TIMEOUT_MS), config.mainToolIdleTimeout.timeoutMs, 0, 7 * 24 * 60 * 60 * 1000);
 }
 
 function applyRoleEnv(role: GoalRoleRuntimeConfig, env: NodeJS.ProcessEnv, keys: Record<"model" | "thinking" | "systemPrompt" | "promptTemplate" | "extraInstructions" | "tools", string[]>): void {
@@ -303,6 +318,13 @@ function mergeLoopSafety(target: GoalLoopSafetyRuntimeConfig, raw: RawGoalLoopSa
 }
 
 function mergeHttpIdleTimeout(target: GoalHttpIdleTimeoutRuntimeConfig, raw: RawGoalHttpIdleTimeoutConfig | undefined): void {
+  if (!raw) return;
+  const enabled = boolFromUnknown(raw.enabled);
+  if (enabled !== undefined) target.enabled = enabled;
+  target.timeoutMs = clampInt(numberFromUnknown(raw.timeoutMs), target.timeoutMs, 0, 7 * 24 * 60 * 60 * 1000);
+}
+
+function mergeMainToolIdleTimeout(target: GoalMainToolIdleTimeoutRuntimeConfig, raw: RawGoalMainToolIdleTimeoutConfig | undefined): void {
   if (!raw) return;
   const enabled = boolFromUnknown(raw.enabled);
   if (enabled !== undefined) target.enabled = enabled;

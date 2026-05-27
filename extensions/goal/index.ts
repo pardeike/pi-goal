@@ -7,6 +7,7 @@ import { applyLoopSafety } from "./loop-safety.ts";
 import { appendProgressLine, createGoalProgressSnapshot, createVerifierFlowMessage, createVerifierProgressTracker, createVerifierStartedMessage, createVerifierVerdictMessage, registerGoalVerifierMessageRenderer, type GoalVerifierFlowMessage } from "./progress.ts";
 import { buildInitialGoalPrompt, buildRetryPrompt } from "./prompts.ts";
 import { createGoalRun, effectiveThinkingLevelForModel, entriesForGoalRun, extractLatestAssistantText, goalStateEntry, isActive, isTerminal, latestAssistantRuntimeError, latestGoalRunFromEntries, modelRefFromModel, nextAttempt, parseGoalCommand, withStatus, withVerdict } from "./state.ts";
+import { buildMainToolIdleProgressSignature, createActiveMainToolExecution, findTimedOutMainTool, msUntilNextMainToolTimeout, touchActiveMainToolExecution, type ActiveMainToolExecution, type MainToolIdleTrip } from "./tool-idle.ts";
 import { clearGoalWidget, updateGoalUI } from "./tui.ts";
 import type { EvidenceProgressEvent, GoalProgressPhase, GoalProgressSnapshot, GoalRoleRuntimeConfig, GoalRun, GoalRuntimeConfig, GoalThinkingLevel, SessionSummarizerAdapter, SessionSummaryEvidence, VerifierAdapter, VerifierInput, VerifierProgressEvent, VerifierVerdict } from "./types.ts";
 import { GOAL_STATE_CUSTOM_TYPE } from "./types.ts";
@@ -26,9 +27,45 @@ export default function goalExtension(pi: ExtensionAPI): void {
   let activeAgentTurnId = 0;
   let guardAbortedTurnId: number | undefined;
   let attemptMetrics = createAttemptGuardMetrics();
+  let activeMainTools = new Map<string, ActiveMainToolExecution>();
+  let mainToolIdleTimer: NodeJS.Timeout | undefined;
   let activeHttpIdleTimeoutOverride: GoalHttpIdleTimeoutOverride | undefined;
   const verifier: VerifierAdapter = new SdkVerifierAdapter();
   const summarizer: SessionSummarizerAdapter = new SdkSessionSummarizerAdapter();
+
+  function clearMainToolIdleTimer(): void {
+    if (!mainToolIdleTimer) return;
+    clearTimeout(mainToolIdleTimer);
+    mainToolIdleTimer = undefined;
+  }
+
+  function clearMainToolTracking(): void {
+    clearMainToolIdleTimer();
+    activeMainTools = new Map<string, ActiveMainToolExecution>();
+  }
+
+  function armMainToolIdleTimer(ctx: ExtensionContext): void {
+    clearMainToolIdleTimer();
+    if (!activeRun || activeRun.status !== "running" || verifierRunning) return;
+    const waitMs = msUntilNextMainToolTimeout(activeMainTools.values(), activeConfig.mainToolIdleTimeout);
+    if (waitMs === undefined) return;
+    mainToolIdleTimer = setTimeout(() => {
+      triggerMainToolIdleTimeout(ctx);
+    }, Math.max(1, waitMs));
+  }
+
+  function triggerMainToolIdleTimeout(ctx: ExtensionContext): void {
+    clearMainToolIdleTimer();
+    if (!activeRun || activeRun.status !== "running" || verifierRunning) return;
+    if (guardAbortedTurnId === activeAgentTurnId) return;
+    const trip = findTimedOutMainTool(activeMainTools.values(), activeConfig.mainToolIdleTimeout);
+    if (!trip) {
+      armMainToolIdleTimer(ctx);
+      return;
+    }
+    guardAbortedTurnId = activeAgentTurnId;
+    handleMainToolIdleTrip(trip, ctx);
+  }
 
   function persist(run: GoalRun): void {
     pi.appendEntry(GOAL_STATE_CUSTOM_TYPE, goalStateEntry(run));
@@ -38,7 +75,10 @@ export default function goalExtension(pi: ExtensionAPI): void {
     activeRun = run;
     if (run) persist(run);
     if (ctx) updateGoalUI(ctx, activeRun, activeProgress);
-    if (isTerminal(run)) restoreHttpIdleTimeout(ctx);
+    if (isTerminal(run)) {
+      clearMainToolTracking();
+      restoreHttpIdleTimeout(ctx);
+    }
   }
 
   async function activateHttpIdleTimeoutOverride(config: GoalRuntimeConfig, ctx: ExtensionContext): Promise<void> {
@@ -82,6 +122,17 @@ export default function goalExtension(pi: ExtensionAPI): void {
   function runWhenSessionIsIdle(ctx: ExtensionContext, callback: () => void): void {
     const poll = (): void => {
       if (ctx.isIdle()) {
+        callback();
+        return;
+      }
+      setTimeout(poll, IDLE_FLUSH_POLL_MS);
+    };
+    runAfterCurrentAgentEvent(poll);
+  }
+
+  function runWhenGuardAbortSettles(ctx: ExtensionContext, turnId: number, callback: () => void): void {
+    const poll = (): void => {
+      if (ctx.isIdle() && guardAbortedTurnId !== turnId) {
         callback();
         return;
       }
@@ -196,6 +247,7 @@ export default function goalExtension(pi: ExtensionAPI): void {
   });
 
   pi.on("session_start", async (_event, ctx) => {
+    clearMainToolTracking();
     activeProgress = undefined;
     const restoredRun = latestGoalRunFromEntries(ctx.sessionManager.getBranch());
     activeRun = isActive(restoredRun) ? restoredRun : undefined;
@@ -232,6 +284,7 @@ export default function goalExtension(pi: ExtensionAPI): void {
   pi.on("agent_start", async (_event, ctx) => {
     activeAgentTurnId += 1;
     attemptMetrics = createAttemptGuardMetrics();
+    clearMainToolTracking();
     if (!isActive(activeRun)) return;
     updateGoalUI(ctx, activeRun, activeProgress);
   });
@@ -245,8 +298,33 @@ export default function goalExtension(pi: ExtensionAPI): void {
     handleAttemptGuardTrip(trip, ctx);
   });
 
+  pi.on("tool_execution_start", async (event, ctx) => {
+    if (!activeRun || activeRun.status !== "running" || verifierRunning) return;
+    if (guardAbortedTurnId === activeAgentTurnId) return;
+    activeMainTools.set(event.toolCallId, createActiveMainToolExecution(event.toolCallId, event.toolName, event.args));
+    armMainToolIdleTimer(ctx);
+  });
+
+  pi.on("tool_execution_update", async (event, ctx) => {
+    if (!activeRun || activeRun.status !== "running" || verifierRunning) return;
+    if (guardAbortedTurnId === activeAgentTurnId) return;
+    const tool = activeMainTools.get(event.toolCallId);
+    if (!tool) return;
+    activeMainTools.set(event.toolCallId, touchActiveMainToolExecution(tool));
+    armMainToolIdleTimer(ctx);
+  });
+
+  pi.on("tool_execution_end", async (event, ctx) => {
+    if (!activeRun || activeRun.status !== "running" || verifierRunning) return;
+    if (guardAbortedTurnId === activeAgentTurnId) return;
+    if (!activeMainTools.has(event.toolCallId)) return;
+    activeMainTools.delete(event.toolCallId);
+    armMainToolIdleTimer(ctx);
+  });
+
   pi.on("agent_end", async (event, ctx) => {
     if (!activeRun || activeRun.status !== "running" || verifierRunning) return;
+    clearMainToolTracking();
     if (guardAbortedTurnId === activeAgentTurnId) {
       guardAbortedTurnId = undefined;
       updateGoalUI(ctx, activeRun, activeProgress);
@@ -482,6 +560,7 @@ export default function goalExtension(pi: ExtensionAPI): void {
   }
 
   pi.on("session_shutdown", async (_event, ctx) => {
+    clearMainToolTracking();
     updateGoalUI(ctx, activeRun, activeProgress);
     restoreHttpIdleTimeout(ctx);
   });
@@ -517,6 +596,43 @@ export default function goalExtension(pi: ExtensionAPI): void {
     sendUserMessage(buildRetryPrompt(judged, verdict), ctx);
   }
 
+  function handleMainToolIdleTrip(trip: MainToolIdleTrip, ctx: ExtensionContext): void {
+    if (!activeRun || activeRun.status !== "running") return;
+
+    const verdict = mainToolIdleVerdict(trip);
+    const judged = withMainToolIdleProgress(withVerdict(activeRun, verdict), trip);
+    clearMainToolTracking();
+    ctx.abort();
+
+    if (shouldStopAfterMainToolIdle(judged)) {
+      const failed = withStatus(judged, "failed", {
+        stopReason: `Goal stopped after ${judged.stalledAttempts ?? 0} repeated main-tool idle timeouts without progress.`,
+      });
+      setRun(failed, ctx);
+      ctx.ui.notify(failed.stopReason ?? "Goal stopped after repeated main-tool idle timeouts.", "error");
+      return;
+    }
+
+    if (judged.attempt >= judged.maxAttempts) {
+      const failed = withStatus(judged, "failed", {
+        stopReason: `Goal reached maxAttempts (${judged.maxAttempts}) after a main-tool idle timeout.`,
+      });
+      setRun(failed, ctx);
+      ctx.ui.notify(`Goal failed after main-tool idle timeout on attempt ${failed.attempt}/${failed.maxAttempts}.`, "error");
+      return;
+    }
+
+    const retryRun = nextAttempt(judged);
+    setRun(retryRun, ctx);
+    ctx.ui.notify(`Goal attempt ${judged.attempt}/${judged.maxAttempts} aborted after ${trip.tool.description} was idle for ${formatDuration(trip.idleMs)}.`, "warning");
+    const retryPrompt = buildRetryPrompt(judged, verdict);
+    const abortedTurnId = activeAgentTurnId;
+    runWhenGuardAbortSettles(ctx, abortedTurnId, () => {
+      if (activeRun?.id !== retryRun.id || activeRun.status !== "running" || activeRun.attempt !== retryRun.attempt) return;
+      sendUserMessage(retryPrompt, ctx);
+    });
+  }
+
   function withAttemptGuardProgress(run: GoalRun, trip: AttemptGuardTrip): GoalRun {
     const progressSignature = `attempt-guard:${trip.reason}`;
     const stalledAttempts = run.progressSignature === progressSignature ? (run.stalledAttempts ?? 0) + 1 : 0;
@@ -538,6 +654,17 @@ export default function goalExtension(pi: ExtensionAPI): void {
     );
   }
 
+  function withMainToolIdleProgress(run: GoalRun, trip: MainToolIdleTrip): GoalRun {
+    const progressSignature = buildMainToolIdleProgressSignature(trip.tool);
+    const stalledAttempts = run.progressSignature === progressSignature ? (run.stalledAttempts ?? 0) + 1 : 0;
+    return {
+      ...run,
+      progressSignature,
+      stalledAttempts,
+      lastProgressAt: stalledAttempts === 0 ? Date.now() : run.lastProgressAt ?? run.startedAt,
+    };
+  }
+
   function withMainRuntimeErrorProgress(run: GoalRun, errorMessage: string): GoalRun {
     const progressSignature = `main-runtime-error:${normalizeRuntimeError(errorMessage)}`;
     const stalledAttempts = run.progressSignature === progressSignature ? (run.stalledAttempts ?? 0) + 1 : 0;
@@ -550,6 +677,10 @@ export default function goalExtension(pi: ExtensionAPI): void {
   }
 
   function shouldStopAfterMainRuntimeError(run: GoalRun): boolean {
+    return (run.stalledAttempts ?? 0) >= 2;
+  }
+
+  function shouldStopAfterMainToolIdle(run: GoalRun): boolean {
     return (run.stalledAttempts ?? 0) >= 2;
   }
 }
@@ -617,6 +748,23 @@ function normalizeRuntimeError(message: string): string {
   return message.replace(/\s+/g, " ").trim().slice(0, 240);
 }
 
+function mainToolIdleVerdict(trip: MainToolIdleTrip): VerifierVerdict {
+  return {
+    verdict: "FAIL",
+    confidence: 1,
+    summary: `The main attempt was aborted because ${trip.tool.description} was idle for ${formatDuration(trip.idleMs)}.`,
+    evidence: [
+      `tool: ${trip.tool.description}`,
+      `toolCallId: ${trip.tool.toolCallId}`,
+      `tool runtime before abort: ${formatDuration(Math.max(0, trip.tool.lastActivityAt - trip.tool.startedAt))}`,
+      `idle duration before abort: ${formatDuration(trip.idleMs)}`,
+    ],
+    objections: ["The visible main session stopped making observable progress because an active tool call went quiet and did not finish."],
+    nextInstructions: "Retry with a smaller or bounded command. Prefer explicit timeouts and direct commands such as `tail -n 30 <file>` instead of pipelines that can wait forever.",
+    steeringFeedback: "The last tool call hung. Re-run it with a timeout or a more direct bounded command, then continue from the observed result.",
+  };
+}
+
 function attemptGuardVerdict(trip: AttemptGuardTrip): VerifierVerdict {
   const metrics = trip.metrics;
   return {
@@ -634,4 +782,14 @@ function attemptGuardVerdict(trip: AttemptGuardTrip): VerifierVerdict {
     nextInstructions: "Continue with a smaller, concrete edit plan. Avoid giant or malformed edit tool calls. Read the target file, make one targeted change at a time, then run validation.",
     steeringFeedback: "Stop the malformed edit stream. Make one small targeted edit, then run validation.",
   };
+}
+
+function formatDuration(ms: number): string {
+  const totalSeconds = Math.floor(Math.max(0, ms) / 1000);
+  const hours = Math.floor(totalSeconds / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const seconds = totalSeconds % 60;
+  if (hours > 0) return `${hours}h ${minutes}m ${seconds}s`;
+  if (minutes > 0) return `${minutes}m ${seconds}s`;
+  return `${seconds}s`;
 }

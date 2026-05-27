@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { createVerifierFlowMessage, createVerifierProgressTracker, createVerifierVerdictMessage } from "../extensions/goal/progress.ts";
+import { createVerifierFlowMessage, createVerifierProgressTracker, createVerifierStartedMessage, createVerifierVerdictMessage } from "../extensions/goal/progress.ts";
 
 describe("verifier progress transcript messages", () => {
   it("keeps LLM-visible content compact while preserving details for display", () => {
@@ -33,6 +33,13 @@ describe("verifier progress transcript messages", () => {
     expect(message.details.status).toBe("error");
     expect(message.details.lines).toContain("Blocking: npm test failed");
     expect(message.details.lines).toContain("Next: Fix the failing test.");
+  });
+
+  it("shows verifier start attempt without the max-attempt denominator", () => {
+    const message = createVerifierStartedMessage(2, 10000);
+
+    expect(message.details.lines).toContain("Attempt: 2");
+    expect(message.details.lines).not.toContain("Attempt: 2/10000");
   });
 });
 

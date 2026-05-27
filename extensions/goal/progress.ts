@@ -63,12 +63,12 @@ export function createVerifierFlowMessage(details: Omit<GoalVerifierFlowMessageD
   };
 }
 
-export function createVerifierStartedMessage(attempt: number, maxAttempts: number, model?: GoalModelRef): GoalVerifierFlowMessage {
+export function createVerifierStartedMessage(attempt: number, _maxAttempts: number, model?: GoalModelRef): GoalVerifierFlowMessage {
   return createVerifierFlowMessage({
     phase: "verifying",
     status: "running",
     title: "Independent verifier started",
-    lines: [`Attempt: ${attempt}/${maxAttempts}`, `Verifier model: ${formatModelRef(model)}`],
+    lines: [`Attempt: ${attempt}`, `Verifier model: ${formatModelRef(model)}`],
   });
 }
 

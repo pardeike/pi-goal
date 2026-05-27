@@ -13,6 +13,7 @@ describe("goal prompts", () => {
     expect(prompt).toContain("Work normally and visibly");
     expect(prompt).toContain("exact evidence");
     expect(prompt).toContain("independent skeptical verifier");
+    expect(prompt).toContain("Do not continue or clean up any earlier /goal objective");
   });
 
   it("turns verifier failures into concrete retry instructions", () => {

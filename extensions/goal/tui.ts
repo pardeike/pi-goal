@@ -25,27 +25,38 @@ export function clearGoalWidget(ctx: ExtensionContext): void {
 export function formatStatus(run: GoalRun): string {
   const prefix = run.status === "passed" ? "goal: passed" : run.status === "failed" ? "goal: failed" : run.status === "cancelled" ? "goal: cancelled" : `goal: ${run.status}`;
   if (isTerminal(run)) return prefix;
-  return `${prefix} ${run.attempt}/${run.maxAttempts}`;
+  return `${prefix} attempt ${run.attempt}`;
 }
 
 export function formatWidget(run: GoalRun, progress?: GoalProgressSnapshot): string[] {
   const verdict = run.lastVerdict;
   const lines = [
+    `STATE: ${run.status.toUpperCase()} | Attempt: ${run.attempt}`,
     `Goal: ${run.objective}`,
-    `State: ${run.status} | Attempt: ${run.attempt}/${run.maxAttempts}`,
-    `Main: ${formatModelRef(run.mainModel)}`,
-    `Verifier: ${formatModelRef(run.verifierModel)}`,
-    `Summarizer: ${formatModelRef(run.summarizerModel)}`,
   ];
 
+  if (verdict) {
+    lines.push(`Verdict: ${verdict.verdict} (${verdict.confidence.toFixed(2)})`);
+    lines.push(`  Summary: ${verdict.summary}`);
+    if (verdict.objections.length > 0) {
+      lines.push(`  Blocking: ${verdict.objections[0]}`);
+    }
+    if (verdict.steeringFeedback?.trim()) {
+      lines.push(`  Steer: ${verdict.steeringFeedback.trim()}`);
+    }
+    if (verdict.nextInstructions.trim()) {
+      lines.push(`  Next: ${verdict.nextInstructions.trim()}`);
+    }
+  }
+
   if (run.observerMemory?.trim()) {
-    lines.push(`Observer memory: ${truncate(run.observerMemory.trim(), 240).replace(/\s+/g, " ")}`);
+    lines.push(`Notes: observer memory: ${truncate(run.observerMemory.trim(), 240).replace(/\s+/g, " ")}`);
   }
   if ((run.stalledAttempts ?? 0) > 0) {
-    lines.push(`No-progress cycles: ${run.stalledAttempts}`);
+    lines.push(`  No-progress cycles: ${run.stalledAttempts}`);
   }
   if (run.stopReason?.trim()) {
-    lines.push(`Stop reason: ${truncate(run.stopReason.trim(), 240).replace(/\s+/g, " ")}`);
+    lines.push(`  Stop reason: ${truncate(run.stopReason.trim(), 240).replace(/\s+/g, " ")}`);
   }
 
   if (progress) {
@@ -55,25 +66,14 @@ export function formatWidget(run: GoalRun, progress?: GoalProgressSnapshot): str
         progress.turnCount !== undefined ? `turns ${progress.turnCount}` : "",
         progress.toolCount !== undefined ? `tools ${progress.toolCount}` : "",
       ].filter(Boolean);
-      if (metrics.length > 0) lines.push(`Verifier activity: ${metrics.join(" | ")}`);
+      if (metrics.length > 0) lines.push(`  Verifier activity: ${metrics.join(" | ")}`);
     }
     for (const progressLine of progress.lines.slice(-5)) {
-      lines.push(`> ${progressLine}`);
+      lines.push(`  > ${progressLine}`);
     }
   }
 
-  if (verdict) {
-    lines.push(`Last verdict: ${verdict.verdict} (${verdict.confidence.toFixed(2)}) ${verdict.summary}`);
-    if (verdict.objections.length > 0) {
-      lines.push(`Blocking: ${verdict.objections[0]}`);
-    }
-    if (verdict.steeringFeedback?.trim()) {
-      lines.push(`Steer: ${verdict.steeringFeedback.trim()}`);
-    }
-    if (verdict.nextInstructions.trim()) {
-      lines.push(`Next: ${verdict.nextInstructions.trim()}`);
-    }
-  }
+  lines.push(`Runtime: main=${formatModelRef(run.mainModel)} | verifier=${formatModelRef(run.verifierModel)} | summarizer=${formatModelRef(run.summarizerModel)}`);
 
   return lines;
 }

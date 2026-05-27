@@ -70,6 +70,7 @@ export interface GoalRun {
   maxAttempts: number;
   startedAt: number;
   updatedAt: number;
+  contextStartEntryId?: string | null;
   mainModel?: GoalModelRef;
   verifierModel?: GoalModelRef;
   summarizerModel?: GoalModelRef;

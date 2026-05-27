@@ -27,6 +27,7 @@ export function parseGoalCommand(args: string): ParsedCommand {
 export function createGoalRun(params: {
   objective: string;
   maxAttempts?: number;
+  contextStartEntryId?: string | null;
   mainModel?: GoalModelRef;
   verifierModel?: GoalModelRef;
   summarizerModel?: GoalModelRef;
@@ -40,6 +41,7 @@ export function createGoalRun(params: {
     maxAttempts: params.maxAttempts ?? 10_000,
     startedAt: now,
     updatedAt: now,
+    contextStartEntryId: params.contextStartEntryId,
     mainModel: params.mainModel,
     verifierModel: params.verifierModel,
     summarizerModel: params.summarizerModel,
@@ -126,6 +128,13 @@ export function latestGoalRunFromEntries(entries: SessionEntry[]): GoalRun | und
     if (isGoalStateEntry(entry.data)) return entry.data.run;
   }
   return undefined;
+}
+
+export function entriesForGoalRun(entries: SessionEntry[], run: GoalRun): SessionEntry[] {
+  if (run.contextStartEntryId === undefined || run.contextStartEntryId === null) return entries;
+  const startIndex = entries.findIndex((entry) => entry.id === run.contextStartEntryId);
+  if (startIndex < 0) return entries;
+  return entries.slice(startIndex + 1);
 }
 
 export function extractLatestAssistantText(messages: unknown[]): string {

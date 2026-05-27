@@ -47,6 +47,8 @@ ${run.objective}
 
 Work normally and visibly in this Pi session. Use the current model and tools as you usually would. Keep tool calls small and well-formed; if a tool call fails, recover with a simpler targeted command or edit. Do not claim completion from intent alone. Inspect the real workspace, run relevant checks, and make only changes that directly support the objective.
 
+This is a new goal run. Do not continue or clean up any earlier /goal objective unless it is directly required for the objective above.
+
 When you believe the objective is complete, stop and summarize the exact evidence: files changed, commands run, exit codes, and any remaining risk. An independent skeptical verifier will inspect the result.`;
 }
 

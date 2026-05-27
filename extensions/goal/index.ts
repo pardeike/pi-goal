@@ -6,7 +6,7 @@ import { activateGoalHttpIdleTimeout, type GoalHttpIdleTimeoutOverride } from ".
 import { applyLoopSafety } from "./loop-safety.ts";
 import { appendProgressLine, createGoalProgressSnapshot, createVerifierFlowMessage, createVerifierProgressTracker, createVerifierStartedMessage, createVerifierVerdictMessage, registerGoalVerifierMessageRenderer, type GoalVerifierFlowMessage } from "./progress.ts";
 import { buildInitialGoalPrompt, buildRetryPrompt } from "./prompts.ts";
-import { createGoalRun, effectiveThinkingLevelForModel, extractLatestAssistantText, goalStateEntry, isActive, isTerminal, latestAssistantRuntimeError, latestGoalRunFromEntries, modelRefFromModel, nextAttempt, parseGoalCommand, withStatus, withVerdict } from "./state.ts";
+import { createGoalRun, effectiveThinkingLevelForModel, entriesForGoalRun, extractLatestAssistantText, goalStateEntry, isActive, isTerminal, latestAssistantRuntimeError, latestGoalRunFromEntries, modelRefFromModel, nextAttempt, parseGoalCommand, withStatus, withVerdict } from "./state.ts";
 import { clearGoalWidget, updateGoalUI } from "./tui.ts";
 import type { EvidenceProgressEvent, GoalProgressPhase, GoalProgressSnapshot, GoalRoleRuntimeConfig, GoalRun, GoalRuntimeConfig, GoalThinkingLevel, SessionSummarizerAdapter, SessionSummaryEvidence, VerifierAdapter, VerifierInput, VerifierProgressEvent, VerifierVerdict } from "./types.ts";
 import { GOAL_STATE_CUSTOM_TYPE } from "./types.ts";
@@ -99,6 +99,7 @@ export default function goalExtension(pi: ExtensionAPI): void {
   }
 
   async function summarizeSessionSafely(run: GoalRun, model: VerifierInput["model"], thinkingLevel: GoalThinkingLevel | undefined, ctx: ExtensionContext, config: GoalRuntimeConfig): Promise<SessionSummaryEvidence> {
+    const entries = entriesForGoalRun(ctx.sessionManager.getBranch(), run);
     try {
       return await summarizer.summarize({
         goal: {
@@ -107,7 +108,7 @@ export default function goalExtension(pi: ExtensionAPI): void {
         },
         cwd: ctx.cwd,
         sessionFile: ctx.sessionManager.getSessionFile(),
-        entries: ctx.sessionManager.getEntries(),
+        entries,
         model,
         modelRegistry: ctx.modelRegistry,
         thinkingLevel,
@@ -117,7 +118,7 @@ export default function goalExtension(pi: ExtensionAPI): void {
       const message = error instanceof Error ? error.message : String(error);
       return {
         generatedAt: new Date().toISOString(),
-        entryCount: ctx.sessionManager.getEntries().length,
+        entryCount: entries.length,
         summary: `Session summarizer failed: ${message}`,
         files: [],
         commands: [],
@@ -144,14 +145,14 @@ export default function goalExtension(pi: ExtensionAPI): void {
       }
 
       if (parsed.command.kind === "status") {
-        const run = activeRun ?? latestGoalRunFromEntries(ctx.sessionManager.getEntries());
+        const run = activeRun ?? latestGoalRunFromEntries(ctx.sessionManager.getBranch());
         if (!run) {
           ctx.ui.notify("No goal run in this session.", "info");
           return;
         }
         activeRun = run;
         updateGoalUI(ctx, run, activeProgress);
-        ctx.ui.notify(`${run.status} ${run.attempt}/${run.maxAttempts}: ${run.objective}`, "info");
+        ctx.ui.notify(`${run.status} attempt ${run.attempt}: ${run.objective}`, "info");
         return;
       }
 
@@ -183,6 +184,7 @@ export default function goalExtension(pi: ExtensionAPI): void {
       const run = createGoalRun({
         objective: parsed.command.objective,
         maxAttempts: config.maxAttempts,
+        contextStartEntryId: ctx.sessionManager.getLeafId(),
         mainModel: modelRefFromModel(ctx.model, pi.getThinkingLevel()),
         verifierModel: modelRefFromModel(verifierModel ?? ctx.model, verifierThinkingLevel),
         summarizerModel: modelRefFromModel(summarizerModel ?? ctx.model, summarizerThinkingLevel),
@@ -195,7 +197,8 @@ export default function goalExtension(pi: ExtensionAPI): void {
 
   pi.on("session_start", async (_event, ctx) => {
     activeProgress = undefined;
-    activeRun = latestGoalRunFromEntries(ctx.sessionManager.getEntries());
+    const restoredRun = latestGoalRunFromEntries(ctx.sessionManager.getBranch());
+    activeRun = isActive(restoredRun) ? restoredRun : undefined;
     if (isActive(activeRun)) {
       const config = await loadConfig(ctx);
       activeConfig = config;

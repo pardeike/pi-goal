@@ -5,7 +5,7 @@ import { formatStatus, formatWidget } from "../extensions/goal/tui.ts";
 describe("TUI formatting", () => {
   it("formats active status compactly", () => {
     const run = createGoalRun({ objective: "fix tests", maxAttempts: 3 });
-    expect(formatStatus(run)).toBe("goal: running 1/3");
+    expect(formatStatus(run)).toBe("goal: running attempt 1");
   });
 
   it("includes verifier objections in the widget", () => {
@@ -24,12 +24,16 @@ describe("TUI formatting", () => {
       stopReason: "Loop safety stopped the goal.",
     };
 
-    expect(formatWidget(run)).toContain("Blocking: No test command was run.");
-    expect(formatWidget(run)).toContain("Steer: Run the validation command before summarizing.");
-    expect(formatWidget(run)).toContain("Next: Run npm test.");
-    expect(formatWidget(run)).toContain("Observer memory: Attempt 1 changed code but did not run validation.");
-    expect(formatWidget(run)).toContain("No-progress cycles: 2");
-    expect(formatWidget(run)).toContain("Stop reason: Loop safety stopped the goal.");
+    const widget = formatWidget(run);
+    expect(widget[0]).toBe("STATE: RUNNING | Attempt: 1");
+    expect(widget).toContain("Verdict: FAIL (0.75)");
+    expect(widget).toContain("  Summary: Missing validation.");
+    expect(widget).toContain("  Blocking: No test command was run.");
+    expect(widget).toContain("  Steer: Run the validation command before summarizing.");
+    expect(widget).toContain("  Next: Run npm test.");
+    expect(widget).toContain("Notes: observer memory: Attempt 1 changed code but did not run validation.");
+    expect(widget).toContain("  No-progress cycles: 2");
+    expect(widget).toContain("  Stop reason: Loop safety stopped the goal.");
   });
 
   it("includes transient verifier progress when provided", () => {
@@ -47,10 +51,10 @@ describe("TUI formatting", () => {
     });
 
     expect(widget).toContain("Progress: Verifier tool running: bash npm test");
-    expect(widget).toContain("Verifier activity: turns 1 | tools 0");
+    expect(widget).toContain("  Verifier activity: turns 1 | tools 0");
     expect(widget).not.toContain("hidden thinking chars 42");
     expect(widget).not.toContain("Verifier text: Checking validation evidence");
-    expect(widget).toContain("> tool: bash npm test -> running");
+    expect(widget).toContain("  > tool: bash npm test -> running");
   });
 
   it("formats model refs with effective clamped thinking levels", () => {
@@ -69,8 +73,9 @@ describe("TUI formatting", () => {
 
     const widget = formatWidget(run);
 
-    expect(widget).toContain("Main: ollama/qwen3.6:27b:high");
-    expect(widget).toContain("Verifier: ollama/qwen3.6:27b:high");
-    expect(widget).toContain("Summarizer: ollama/qwen3.6:27b:high");
+    expect(widget).toContain("Runtime: main=ollama/qwen3.6:27b:high | verifier=ollama/qwen3.6:27b:high | summarizer=ollama/qwen3.6:27b:high");
+    expect(widget).not.toContain("Main: ollama/qwen3.6:27b:high");
+    expect(widget).not.toContain("Verifier: ollama/qwen3.6:27b:high");
+    expect(widget).not.toContain("Summarizer: ollama/qwen3.6:27b:high");
   });
 });

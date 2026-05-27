@@ -107,7 +107,7 @@ Inside Pi:
 
 `/goal <objective>` starts a run. The main session receives a normal visible prompt and works as usual. When the main agent stops, the extension first launches a separate summarizer session to summarize the visible session log, collects deterministic workspace evidence, then launches an independent observer session with a clean context. The observer is read-oriented by default and is instructed to run validation commands, inspect the workspace, and fail closed when evidence is missing.
 
-The Pi TUI footer and goal widget show the active objective, attempt count, current state, observer model, summarizer model, observer memory, no-progress count, stop reason, last verdict, blocking objection, short steering feedback, and next instruction.
+The Pi TUI footer and goal widget put current state and attempt first, group the latest verifier verdict with blockers and next steps, then show notes such as observer memory, no-progress count, stop reason, and compact runtime model details.
 
 ## Configuration
 
